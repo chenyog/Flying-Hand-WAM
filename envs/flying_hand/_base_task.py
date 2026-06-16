@@ -101,7 +101,8 @@ class FlyingHandBaseTask(gym.Env):
         self.is_grasping = False
         self.record_flying_hand_trajectory = False
         self.flying_hand_ref_pose = None
-        self.flying_hand_state_path = []
+        self.flying_hand_target_state_path = []
+        self.flying_hand_actual_state_path = []
         self.left_joint_path = []
         self.right_joint_path = []
         self.task_actors = []
@@ -495,52 +496,46 @@ class FlyingHandBaseTask(gym.Env):
             joint.set_drive_target(qpos[idx])
             joint.set_drive_velocity_target(0)
 
-    def _get_flying_hand_state(self):
-        pose = self.initial_imu_odom_pose.inv() * (
-            (self.flying_hand_ref_pose or self.flying_hand_initial_pose)
-            * (self.flying_hand_initial_pose.inv() * self.initial_imu_odom_pose)
-        )
+    def _get_flying_hand_xyzyaw(self, root_pose):
+        pose = self.initial_imu_odom_pose.inv() * (root_pose * (self.flying_hand_initial_pose.inv() * self.initial_imu_odom_pose))
         return np.array([
             *pose.p.tolist(),
             np.arctan2(2 * (pose.q[0] * pose.q[3] + pose.q[1] * pose.q[2]), 1 - 2 * (pose.q[2] ** 2 + pose.q[3] ** 2)),
             float(self.is_grasping),
         ], dtype=np.float32)
 
+    def _get_flying_hand_target_state(self):
+        return self._get_flying_hand_xyzyaw(self.flying_hand_ref_pose or self.flying_hand_initial_pose)
+
+    def _get_flying_hand_actual_state(self):
+        return self._get_flying_hand_xyzyaw(self.flying_hand.get_root_pose())
+
     def _record_flying_hand_state(self):
         if self.record_flying_hand_trajectory:
-            self.flying_hand_state_path.append(self._get_flying_hand_state())
+            self.flying_hand_target_state_path.append(self._get_flying_hand_target_state())
+            self.flying_hand_actual_state_path.append(self._get_flying_hand_actual_state())
 
     def reset_flying_hand_trajectory(self):
-        self.flying_hand_state_path = []
+        self.flying_hand_target_state_path = []
+        self.flying_hand_actual_state_path = []
         self.record_flying_hand_trajectory = True
 
     def get_obs(self):
         self._update_render()
         self.cameras.update_picture()
+        wrist = self.cameras.wrist_camera_name
         obs = {
-            "observation": self.cameras.get_config(),
-            "pointcloud": [],
-            "joint_action": {},
-            "endpose": {},
+            "observation": {wrist: {}},
+            "flying_hand": {
+                "target_state": self._get_flying_hand_target_state(),
+                "actual_state": self._get_flying_hand_actual_state(),
+            },
         }
         if self.data_type.get("rgb", False):
-            for name, rgb in self.cameras.get_rgb().items():
-                obs["observation"][name].update(rgb)
-        if self.data_type.get("mesh_segmentation", False):
-            for name, seg in self.cameras.get_segmentation(level="mesh").items():
-                obs["observation"][name].update(seg)
-        if self.data_type.get("actor_segmentation", False):
-            for name, seg in self.cameras.get_segmentation(level="actor").items():
-                obs["observation"][name].update(seg)
-        if self.data_type.get("depth", False):
-            for name, depth in self.cameras.get_depth().items():
-                obs["observation"][name].update(depth)
-        if self.data_type.get("pointcloud", False):
-            obs["pointcloud"] = self.cameras.get_pcd(self.data_type.get("conbine", False))
-        obs["flying_hand"] = {"state": self._get_flying_hand_state()}
+            obs["observation"][wrist].update(self.cameras.get_rgb()[wrist])
         self.now_obs = deepcopy(obs)
         if self.eval_video_path is not None:
-            self.eval_video_ffmpeg.stdin.write(obs["observation"]["head_camera"]["rgb"].tobytes())
+            self.eval_video_ffmpeg.stdin.write(obs["observation"][wrist]["rgb"].tobytes())
         return obs
 
     def _take_picture(self):
@@ -578,14 +573,15 @@ class FlyingHandBaseTask(gym.Env):
         process_folder_to_hdf5_video(
             self.folder_path["cache"],
             f"{self.save_dir}/data/episode{self.ep_num}.hdf5",
-            {name: f"{self.save_dir}/video/{name}/episode{self.ep_num}.mp4" for name in self.video_cameras},
+            {self.cameras.wrist_camera_name: f"{self.save_dir}/video/{self.cameras.wrist_camera_name}/episode{self.ep_num}.mp4"},
         )
 
     def save_traj_data(self, idx):
         save_pkl(os.path.join(self.save_dir, "_traj_data", f"episode{idx}.pkl"), {
             "left_joint_path": deepcopy(self.left_joint_path),
             "right_joint_path": deepcopy(self.right_joint_path),
-            "flying_hand_state": np.array(self.flying_hand_state_path, dtype=np.float32),
+            "flying_hand_target_state": np.array(self.flying_hand_target_state_path, dtype=np.float32),
+            "flying_hand_actual_state": np.array(self.flying_hand_actual_state_path, dtype=np.float32),
         })
 
     def load_tran_data(self, idx):
