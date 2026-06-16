@@ -12,8 +12,8 @@ class shake_bottle(FlyingHandBaseTask):
     pull_out_x_offset = -0.45
     grasp_z_offset = -0.01
     pull_out_z_offset = 0.12
-    shake_y_offset = 0.16
-    shake_seconds = 0.38
+    shake_y_offset = 0.12
+    shake_seconds = 0.8
     shake_cycles = 3
     success_shake_y = 0.10
     success_lift_z = 0.03
