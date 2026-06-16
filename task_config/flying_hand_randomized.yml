@@ -1,0 +1,41 @@
+# if you want to modify the config, please check the following tutorial first:
+# https://robotwin-platform.github.io/doc/usage/configurations.html
+render_freq: 0
+episode_num: 100
+use_seed: false
+timestep: 0.005
+save_freq: 10
+enable_dynamics: true
+embodiment: [flying-hand]
+language_num: 100
+domain_randomization:
+  random_background: false
+  cluttered_board: true
+  clean_background_rate: 0.02
+  random_head_camera_dis: 0.03
+  random_board_height: 0.03
+  random_flying_hand_init_pos: [0.05, 0.05, 0.05]
+  random_light: true
+  crazy_random_light_rate: 0.02
+camera:
+  head_camera_type: Large_D435
+  wrist_camera_type: Large_HBVCAM_F2209HD
+  collect_head_camera: true
+  collect_wrist_camera: true
+  video_cameras: [head_camera, wrist_camera]
+data_type:
+  rgb: true
+  third_view: false
+  depth: false
+  pointcloud: false
+  observer: false
+  endpose: false
+  qpos: false
+  mesh_segmentation: false
+  actor_segmentation: false
+pcd_down_sample_num: 1024
+pcd_crop: true
+save_path: ./data
+clear_cache_freq: 5
+collect_data: true
+eval_video_log: true

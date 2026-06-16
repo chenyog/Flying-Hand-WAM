@@ -1,0 +1,47 @@
+# @package _global_
+
+defaults:
+  - train
+  - override /task: flying_hand_2cam384_1e-4
+  - _self_
+
+ckpt: null
+gpu_id: 0
+
+model:
+  load_text_encoder: true
+  skip_dit_load_from_pretrain: true
+  action_dit_pretrained_path: null
+
+EVALUATION:
+  robotwin_root: ../..
+  policy_name: FastWAM
+  task_name: ${data.flying_hand_task_name}
+  task_config: ${data.flying_hand_dataset_config}
+  instruction_type: unseen
+  eval_num_episodes: 100
+  output_dir: ./evaluate_results/flying_hand/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
+  action_horizon: null
+  replan_steps: 24
+  num_inference_steps: ${eval_num_inference_steps}
+  sigma_shift: null
+  text_cfg_scale: 1.0
+  negative_prompt: ""
+  rand_device: cpu
+  tiled: false
+  timing_enabled: false
+  skip_get_obs_within_replan: false
+  dataset_stats_path: null
+  device: cuda
+
+MULTIRUN:
+  enabled: false
+  num_gpus: 1
+  max_tasks_per_gpu: 1
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

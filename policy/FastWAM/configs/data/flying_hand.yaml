@@ -1,0 +1,73 @@
+train:
+  _target_: fastwam.datasets.robotwin_flying_hand_dataset.FlyingHandHDF5Dataset
+  dataset_dirs:
+    - ${data.flying_hand_dataset_dir}
+  shape_meta:
+    images:
+      - key: head_camera
+        raw_shape: [3, 480, 640]
+        shape: [3, 480, 640]
+      - key: wrist_camera
+        raw_shape: [3, 480, 640]
+        shape: [3, 480, 640]
+    action:
+      - key: default
+        raw_shape: 5
+        shape: 5
+    state:
+      - key: default
+        raw_shape: 5
+        shape: 5
+  num_frames: 33
+  action_video_freq_ratio: 4
+  video_size: [384, 320]
+  camera_keys: [head_camera, wrist_camera]
+  val_set_proportion: 0.01
+  is_training_set: true
+  pretrained_norm_stats: null
+  processor:
+    _target_: fastwam.datasets.lerobot.processors.fastwam_processor.FastWAMProcessor
+    shape_meta: ${data.train.shape_meta}
+    num_obs_steps: ${data.train.num_frames}
+    num_output_cameras: 2
+    action_output_dim: 5
+    proprio_output_dim: 5
+    action_state_transforms: null
+    use_stepwise_action_norm: false
+    norm_default_mode: z-score
+    norm_exception_mode: null
+    action_state_merger:
+      _target_: fastwam.datasets.lerobot.transforms.action_state_merger.ConcatLeftAlign
+    train_transforms: null
+    val_transforms: null
+  text_embedding_cache_dir: ./data/text_embeds_cache/flying_hand/${data.flying_hand_task_id}
+  context_len: 128
+  instruction_json: ${data.flying_hand_instruction_json}
+  instruction_type: seen
+  scene_info_name: ${data.flying_hand_scene_info_name}
+
+val:
+  _target_: fastwam.datasets.robotwin_flying_hand_dataset.FlyingHandHDF5Dataset
+  dataset_dirs: ${data.train.dataset_dirs}
+  shape_meta: ${data.train.shape_meta}
+  num_frames: ${data.train.num_frames}
+  action_video_freq_ratio: ${data.train.action_video_freq_ratio}
+  video_size: ${data.train.video_size}
+  camera_keys: ${data.train.camera_keys}
+  val_set_proportion: ${data.train.val_set_proportion}
+  is_training_set: false
+  pretrained_norm_stats: null
+  processor: ${data.train.processor}
+  text_embedding_cache_dir: ${data.train.text_embedding_cache_dir}
+  context_len: ${data.train.context_len}
+  instruction_json: ${data.train.instruction_json}
+  instruction_type: unseen
+  scene_info_name: ${data.train.scene_info_name}
+
+flying_hand_task_id: ???
+flying_hand_task_name: flying_hand/${data.flying_hand_task_id}
+flying_hand_dataset_config: flying_hand_clean
+flying_hand_robotwin_root: ../..
+flying_hand_dataset_dir: ${data.flying_hand_robotwin_root}/data/flying-hand/${data.flying_hand_task_id}/${data.flying_hand_dataset_config}
+flying_hand_instruction_json: ${data.flying_hand_robotwin_root}/description/task_instruction/flying-hand/${data.flying_hand_task_id}.json
+flying_hand_scene_info_name: scene_info.json
