@@ -523,16 +523,18 @@ class FlyingHandBaseTask(gym.Env):
     def get_obs(self):
         self._update_render()
         self.cameras.update_picture()
-        wrist = self.cameras.wrist_camera_name
+        cameras = [name for name, _ in self.cameras._cameras() if not self.video_cameras or name in self.video_cameras]
         obs = {
-            "observation": {wrist: {}},
+            "observation": {name: {} for name in cameras},
             "flying_hand": {
                 "target_state": self._get_flying_hand_target_state(),
                 "actual_state": self._get_flying_hand_actual_state(),
             },
         }
         if self.data_type.get("rgb", False):
-            obs["observation"][wrist].update(self.cameras.get_rgb()[wrist])
+            rgb = self.cameras.get_rgb()
+            for name in cameras:
+                obs["observation"][name].update(rgb[name])
         self.now_obs = deepcopy(obs)
         if self.eval_video_path is not None:
             self.eval_video_ffmpeg.stdin.write(obs["observation"][wrist]["rgb"].tobytes())
@@ -570,10 +572,11 @@ class FlyingHandBaseTask(gym.Env):
         if not self.save_data:
             return
         os.makedirs(f"{self.save_dir}/data", exist_ok=True)
+        cameras = [name for name, _ in self.cameras._cameras() if not self.video_cameras or name in self.video_cameras]
         process_folder_to_hdf5_video(
             self.folder_path["cache"],
             f"{self.save_dir}/data/episode{self.ep_num}.hdf5",
-            {self.cameras.wrist_camera_name: f"{self.save_dir}/video/{self.cameras.wrist_camera_name}/episode{self.ep_num}.mp4"},
+            {name: f"{self.save_dir}/video/{name}/episode{self.ep_num}.mp4" for name in cameras},
         )
 
     def save_traj_data(self, idx):
