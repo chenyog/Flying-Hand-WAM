@@ -28,7 +28,7 @@ class FlyingHandBaseTask(gym.Env):
     board_center_x = 1.0
     board_center_y = 0.0
     board_center_z = 1.275
-    shelf_length = 0.20
+    shelf_length = 0.30
     shelf_width = 0.50
     shelf_thickness = 0.02
     shelf_count = 4
