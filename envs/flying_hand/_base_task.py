@@ -166,19 +166,19 @@ class FlyingHandBaseTask(gym.Env):
             kwargs.get("dynamic_friction", 0.5),
             kwargs.get("restitution", 0),
         )
-        self.scene.set_ambient_light(kwargs.get("ambient_light", [0.65, 0.65, 0.65]))
+        self.scene.set_ambient_light(kwargs.get("ambient_light", [0.68, 0.68, 0.68]))
         point_lights = kwargs.get(
             "point_lights",
             [
-                [[-1.2, -0.75, 2.05], [0.22, 0.22, 0.22]],
-                [[-1.2, 0.75, 2.05], [0.22, 0.22, 0.22]],
-                [[-1.3, 0.0, 1.15], [0.14, 0.14, 0.14]],
+                [[-1.2, -0.75, 2.05], [0.95, 0.95, 0.95]],
+                [[-1.2, 0.75, 2.05], [0.95, 0.95, 0.95]],
+                [[-1.3, 0.0, 1.15], [0.72, 0.72, 0.72]],
             ],
         )
         self.point_light_lst = []
         for point_light in point_lights:
             if self.random_light:
-                point_light[1] = np.random.uniform(0.08, 0.32, 3).tolist()
+                point_light[1] = np.random.uniform(0.68, 1.0, 3).tolist()
             self.point_light_lst.append(self.scene.add_point_light(point_light[0], point_light[1], shadow=False))
         if self.render_freq:
             self.viewer = Viewer(self.renderer)
@@ -217,8 +217,8 @@ class FlyingHandBaseTask(gym.Env):
     def _update_render(self):
         if self.crazy_random_light:
             for light in self.point_light_lst:
-                light.set_color(np.random.uniform(0.08, 0.35, 3).tolist())
-            self.scene.set_ambient_light(np.clip(np.array(self.scene.ambient_light) + np.random.rand(3) * 0.12 - 0.06, 0, 0.72))
+                light.set_color(np.random.uniform(0.62, 1.0, 3).tolist())
+            self.scene.set_ambient_light(np.clip(np.array(self.scene.ambient_light) + np.random.rand(3) * 0.08 - 0.04, 0, 0.78))
         self.cameras.update_wrist_camera(self.flying_hand.find_link_by_name(self.flying_hand_config["camera"]["wrist_link"]).get_pose())
         self.scene.update_render()
 
