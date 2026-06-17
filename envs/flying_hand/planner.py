@@ -42,10 +42,9 @@ def hold(env, pose, steps, save_freq=-1):
             env.flying_hand.set_root_pose(hand_pose)
             env.flying_hand.set_root_linear_velocity(hand_v.tolist())
             env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
-            step(env, 1, save_freq=save_freq)
         else:
             set_pose(env, pose)
-            step(env, 1, save_freq=save_freq)
+        step(env, 1, save_freq=save_freq)
 
 
 def minco(points, times, vels=None, accs=None):

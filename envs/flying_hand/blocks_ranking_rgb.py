@@ -13,9 +13,9 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
     block_y_offsets = [-0.18, 0.0, 0.18]
     pre_grasp_x_offset = -0.55
     grasp_x_offset = -0.09
-    pull_out_x_offset = -0.50
+    pull_out_x_offset = -0.54
     grasp_z_offset = 0.03
-    pull_out_z_offset = 0.16
+    pull_out_z_offset = 0.26
 
     def load_actors(self):
         self._reset_board_slots()

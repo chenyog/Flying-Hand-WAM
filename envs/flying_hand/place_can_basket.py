@@ -12,8 +12,9 @@ class place_can_basket(FlyingHandBaseTask):
     grasp_z_offset = 0.02
     pull_out_z_offset = 0.16
     open_gripper_y_offset = -0.04
+    place_pre_z_offset = 0.26
     place_z_offset = 0.16
-    grasp_to_place_seconds = 2.1
+    grasp_to_place_seconds = 2.4
     can_qpos = [0.707225, 0.706849, -0.0100455, -0.00982061]
     basket_qpos = [0.5, 0.5, 0.5, 0.5]
 
@@ -29,7 +30,7 @@ class place_can_basket(FlyingHandBaseTask):
         self.can_start_z = self.can.get_pose().p[2]
         self.basket_start_z = self.basket.get_pose().p[2]
         self.add_prohibit_area(self.can, padding=0.16)
-        self.add_prohibit_area(self.basket, padding=0.12)
+        self.add_prohibit_area(self.basket, padding=0.22)
 
     def _offset_y(self, pose, y):
         p = np.array(pose.p, dtype=float)
@@ -41,7 +42,7 @@ class place_can_basket(FlyingHandBaseTask):
         can_pre = self._get_flying_hand_pose(self.can, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         can_grasp = self._get_flying_hand_pose(self.can, self.grasp_x_offset, self.grasp_z_offset)
         can_pull = self._get_flying_hand_pose(self.can, self.pull_out_x_offset, self.pull_out_z_offset)
-        place_pre = self._offset_y(self._get_flying_hand_pose(self.basket, self.pre_grasp_x_offset, self.place_z_offset), self.open_gripper_y_offset)
+        place_pre = self._offset_y(self._get_flying_hand_pose(self.basket, self.pre_grasp_x_offset, self.place_pre_z_offset), self.open_gripper_y_offset)
         place = self._offset_y(self._get_flying_hand_pose(self.basket, self.grasp_x_offset + 0.04, self.place_z_offset), self.open_gripper_y_offset)
         place_pre = type(place_pre)([place_pre.p[0], place_pre.p[1], max(place_pre.p[2], can_pull.p[2])], place_pre.q)
 

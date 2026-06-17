@@ -10,9 +10,10 @@ class place_fruit_skillet(FlyingHandBaseTask):
     pull_out_x_offset = -0.50
     pre_grasp_z_offset = 0.08
     grasp_z_offset = 0.01
-    pull_out_z_offset = 0.18
+    pull_out_z_offset = 0.22
+    place_pre_z_offset = 0.30
     place_z_offset = 0.13
-    grasp_to_place_seconds = 2.0
+    grasp_to_place_seconds = 2.4
 
     def load_actors(self):
         self._reset_board_slots()
@@ -35,7 +36,7 @@ class place_fruit_skillet(FlyingHandBaseTask):
         grasp = self._get_flying_hand_pose(self.fruit, self.grasp_x_offset, self.grasp_z_offset)
         pull = self._get_flying_hand_pose(self.fruit, self.pull_out_x_offset, self.pull_out_z_offset)
         target = self.skillet.get_functional_point(0)[:3]
-        place_pre = self._pose_from_center(target, self.pull_out_x_offset, self.pull_out_z_offset + self.place_z_offset)
+        place_pre = self._pose_from_center(target, self.pull_out_x_offset, self.place_pre_z_offset)
         place = self._pose_from_center(target, self.grasp_x_offset, self.place_z_offset)
 
         planner.move_minco(

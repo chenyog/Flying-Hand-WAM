@@ -7,6 +7,10 @@ from .blocks_ranking_rgb import blocks_ranking_rgb
 
 
 class blocks_ranking_size(blocks_ranking_rgb):
+    pre_grasp_x_offset = -0.58
+    pull_out_x_offset = -0.58
+    pull_out_z_offset = 0.34
+    pull_out_to_place_seconds = 2.4
     block_half_sizes = np.array([
         [0.024, 0.024, 0.024],
         [0.036, 0.036, 0.036],

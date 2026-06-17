@@ -39,11 +39,11 @@ class FlyingHandBaseTask(gym.Env):
     flying_hand_initial_z_offset = 0.08
     flying_hand_asset_dir = Path("./assets/embodiments/flying-hand")
     vertical_object_qpos = [0.70710678, 0.70710678, 0.0, 0.0]
-    initial_to_pre_grasp_seconds = 1.8
-    pre_grasp_to_grasp_seconds = 1.3
+    initial_to_pre_grasp_seconds = 2.0
+    pre_grasp_to_grasp_seconds = 1.6
     grasp_hold_seconds = 0.7
-    grasp_to_pull_out_seconds = 1.1
-    pull_out_to_place_seconds = 1.8
+    grasp_to_pull_out_seconds = 1.3
+    pull_out_to_place_seconds = 2.1
     release_to_retreat_seconds = pre_grasp_to_grasp_seconds
     release_hold_seconds = 0.5
     flying_hand_black_color = [0.101960784313725, 0.101960784313725, 0.101960784313725, 1.0]
