@@ -3,7 +3,10 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${PROJECT_ROOT}/src:${PYTHONPATH:-}"
-export PATH="/home/chenyog/FastWAM/.venv/bin:${PATH}"
+REPO_VENV_BIN="$(cd "${PROJECT_ROOT}/../.." && pwd)/.venv/bin"
+if [[ -d "${REPO_VENV_BIN}" ]]; then
+  export PATH="${REPO_VENV_BIN}:${PATH}"
+fi
 
 NPROC_PER_NODE="${1:?Usage: bash scripts/train.sh <nproc_per_node> [hydra_overrides...]}"
 shift

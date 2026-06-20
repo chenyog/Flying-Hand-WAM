@@ -6,19 +6,19 @@ defaults:
   - _self_
 
 batch_size: 8
-num_workers: 4
+num_workers: 8
 
 model:
-  mot_checkpoint_mixed_attn: false
+  mot_checkpoint_mixed_attn: true
 
-lr_scheduler_type: cosine
+lr_scheduler_type: "cosine"
 learning_rate: 1e-4
-num_epochs: 20
+num_epochs: 10
 max_steps: null
 log_every: 10
 save_every: 500
 eval_every: 100
 
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 weight_decay: 1e-2
 resume: null

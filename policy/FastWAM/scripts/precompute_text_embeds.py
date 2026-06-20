@@ -71,7 +71,6 @@ def _collect_dataset_settings(data_cfg: DictConfig):
     dataset_dirs: list[str] = []
     cache_dirs: list[Path] = []
     context_lens = set()
-    flying_hand_nodes: list[dict[str, Any]] = []
 
     for node_path, node in _iter_dataset_nodes(data_cfg, path="data"):
         raw_dirs = node.get("dataset_dirs")
@@ -98,17 +97,9 @@ def _collect_dataset_settings(data_cfg: DictConfig):
         if context_len is not None:
             context_lens.add(int(context_len))
 
-        if node.get("instruction_json") is not None:
-            flying_hand_nodes.append({
-                "dataset_dirs": [str(ds) for ds in raw_dirs],
-                "instruction_json": str(node.get("instruction_json")),
-                "instruction_type": str(node.get("instruction_type", "seen")),
-                "scene_info_name": str(node.get("scene_info_name", "scene_info.json")),
-            })
-
         logger.info("Discovered dataset node `%s` with %d dataset_dirs.", node_path, len(raw_dirs))
 
-    return dataset_dirs, cache_dirs, context_lens, flying_hand_nodes
+    return dataset_dirs, cache_dirs, context_lens
 
 
 def _resolve_context_len(context_lens: set[int]) -> int:
@@ -154,28 +145,6 @@ def _read_unique_prompts(dataset_dirs: list[str]) -> list[str]:
     return prompts
 
 
-def _read_flying_hand_prompts(nodes: list[dict[str, Any]]) -> list[str]:
-    prompts: list[str] = []
-    seen = set()
-    for node in nodes:
-        payload = json.loads(Path(node["instruction_json"]).expanduser().read_text(encoding="utf-8"))
-        templates = payload[node["instruction_type"]]
-        for ds_dir in node["dataset_dirs"]:
-            root = Path(ds_dir).expanduser()
-            scene = json.loads((root / node["scene_info_name"]).read_text(encoding="utf-8"))
-            for episode_key in sorted(scene, key=lambda x: int(x.removeprefix("episode_"))):
-                ep = int(episode_key.removeprefix("episode_"))
-                task = templates[ep % len(templates)]
-                for key, value in scene[episode_key]["info"].items():
-                    task = task.replace(key, value)
-                prompt = DEFAULT_PROMPT.format(task=task)
-                if prompt not in seen:
-                    seen.add(prompt)
-                    prompts.append(prompt)
-    logger.info("Loaded %d flying-hand prompts from %d dataset nodes.", len(prompts), len(nodes))
-    return prompts
-
-
 def _get_override_prompt(override_instruction: Any) -> str | None:
     if override_instruction is None:
         return None
@@ -218,7 +187,7 @@ def main(cfg: DictConfig):
     if cfg.data is None:
         raise ValueError("`cfg.data` is required.")
 
-    dataset_dirs, cache_dirs, context_lens, flying_hand_nodes = _collect_dataset_settings(cfg.data)
+    dataset_dirs, cache_dirs, context_lens = _collect_dataset_settings(cfg.data)
     if not cache_dirs:
         raise ValueError("No `text_embedding_cache_dir` found under `cfg.data`.")
 
@@ -230,7 +199,7 @@ def main(cfg: DictConfig):
     else:
         if not dataset_dirs:
             raise ValueError("No `dataset_dirs` found under `cfg.data`.")
-        prompts = _read_flying_hand_prompts(flying_hand_nodes) if flying_hand_nodes else _read_unique_prompts(dataset_dirs)
+        prompts = _read_unique_prompts(dataset_dirs)
     if not prompts:
         logger.warning("No prompts found from tasks.jsonl; nothing to do.")
         return

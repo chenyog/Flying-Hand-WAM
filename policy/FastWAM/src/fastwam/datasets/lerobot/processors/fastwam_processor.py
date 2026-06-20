@@ -225,8 +225,8 @@ class FastWAMProcessor(BaseProcessor):
                 image = trans(image)
             
             meta_shape = [self.num_obs_steps] + shape
-            assert image.shape == meta_shape, \
-                f"Expected shape {meta_shape}, got {image.shape} after transforms for key {key}"
+            assert list(image.shape) == meta_shape, \
+                f"Expected shape {meta_shape}, got {tuple(image.shape)} after transforms for key {key}"
 
             processed_images.append(image)
         pixel_values = torch.stack(processed_images, dim=0) # [num_input_cameras, T, C, H, W]

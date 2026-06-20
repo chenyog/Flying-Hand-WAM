@@ -2,7 +2,7 @@
 
 defaults:
   - train
-  - override /task: flying_hand_2cam384_1e-4
+  - override /task: flying_hand_1cam320_1e-4
   - _self_
 
 ckpt: null
@@ -16,8 +16,8 @@ model:
 EVALUATION:
   robotwin_root: ../..
   policy_name: FastWAM
-  task_name: ${data.flying_hand_task_name}
-  task_config: ${data.flying_hand_dataset_config}
+  task_name: null
+  task_config: flying_hand_clean
   instruction_type: unseen
   eval_num_episodes: 100
   output_dir: ./evaluate_results/flying_hand/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}

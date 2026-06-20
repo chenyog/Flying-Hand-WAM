@@ -83,6 +83,20 @@ def _load_all_tasks(robotwin_root: Path) -> list[str]:
     return dedup_tasks
 
 
+def _load_all_flying_hand_tasks(robotwin_root: Path) -> list[str]:
+    flying_hand_dir = robotwin_root / "data" / "flying_hand"
+    if not flying_hand_dir.is_dir():
+        raise FileNotFoundError(f"Flying-Hand task directory not found: {flying_hand_dir}")
+    tasks = [
+        f"flying_hand/{path.name}"
+        for path in sorted(flying_hand_dir.iterdir(), key=lambda p: p.name)
+        if path.is_dir()
+    ]
+    if not tasks:
+        raise ValueError(f"No Flying-Hand tasks found in: {flying_hand_dir}")
+    return tasks
+
+
 def _parse_success_rate(result_file: Path) -> float:
     if not result_file.exists():
         raise FileNotFoundError(f"Result file not found: {result_file}")
@@ -172,12 +186,9 @@ def main(cfg: DictConfig):
     task_name_cfg = cfg.EVALUATION.task_name
     if task_name_cfg is None or str(task_name_cfg).strip() == "":
         if is_flying_hand:
-            raise ValueError(
-                "`EVALUATION.task_name` is required for flying-hand evaluation. "
-                "Set it with `data.flying_hand_task_id=<task_id>` or "
-                "`EVALUATION.task_name=flying_hand/<task_id>`."
-            )
-        tasks = _load_all_tasks(robotwin_root)
+            tasks = _load_all_flying_hand_tasks(robotwin_root)
+        else:
+            tasks = _load_all_tasks(robotwin_root)
     else:
         tasks = [str(task_name_cfg)]
 

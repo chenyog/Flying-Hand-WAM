@@ -410,7 +410,7 @@ def get_model(usr_args: Dict[str, Any]):
         tiled=tiled,
         timing_enabled=timing_enabled,
         num_video_frames=(int(cfg.data.train.num_frames) - 1) // int(cfg.data.train.action_video_freq_ratio) + 1,
-        is_flying_hand=str(cfg.data.train.get("_target_", "")) == "fastwam.datasets.robotwin_flying_hand_dataset.FlyingHandHDF5Dataset",
+        is_flying_hand=str(cfg.EVALUATION.get("task_config", "")).startswith("flying_hand"),
     )
     return policy
 
