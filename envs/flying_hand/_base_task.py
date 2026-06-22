@@ -577,6 +577,7 @@ class FlyingHandBaseTask(gym.Env):
             self.folder_path["cache"],
             f"{self.save_dir}/data/episode{self.ep_num}.hdf5",
             {name: f"{self.save_dir}/video/{name}/episode{self.ep_num}.mp4" for name in cameras},
+            fps=1.0 / (float(self.sim_timestep) * float(self.save_freq)),
         )
 
     def save_traj_data(self, idx):

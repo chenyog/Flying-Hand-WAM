@@ -220,7 +220,8 @@ class Base_Task(gym.Env):
         scene_config = sapien.SceneConfig()
         self.scene = self.engine.create_scene(scene_config)
         # set simulation timestep
-        self.scene.set_timestep(kwargs.get("timestep", 1 / 250))
+        self.sim_timestep = kwargs.get("timestep", 1 / 250)
+        self.scene.set_timestep(self.sim_timestep)
         # add ground to scene
         self.scene.add_ground(kwargs.get("ground_height", 0))
         # set default physical material
@@ -548,7 +549,12 @@ class Base_Task(gym.Env):
         # print('Merging pkl to hdf5: ', cache_path, ' -> ', target_file_path)
 
         os.makedirs(f"{self.save_dir}/data", exist_ok=True)
-        process_folder_to_hdf5_video(cache_path, target_file_path, target_video_path)
+        process_folder_to_hdf5_video(
+            cache_path,
+            target_file_path,
+            target_video_path,
+            fps=1.0 / (float(self.sim_timestep) * float(self.save_freq)),
+        )
 
     def remove_data_cache(self):
         folder_path = self.folder_path["cache"]

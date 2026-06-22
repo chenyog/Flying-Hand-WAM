@@ -331,12 +331,15 @@ def eval_policy(task_name,
 
 def parse_args_and_config():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--config", type=str)
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    if args.config:
+        with open(args.config, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    else:
+        config = {}
 
     # Parse overrides
     def parse_override_pairs(pairs):

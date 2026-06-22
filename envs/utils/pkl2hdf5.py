@@ -75,20 +75,20 @@ def create_hdf5_from_dict(hdf5_group, data_dict):
                 print(f"Error storing value for key '{key}': {e}")
 
 
-def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path):
+def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path, fps=30.0):
     data_list = parse_dict_structure(load_pkl_file(pkl_files[0]))
     for pkl_file_path in pkl_files:
         pkl_file = load_pkl_file(pkl_file_path)
         append_data_to_structure(data_list, pkl_file)
 
     for camera_name, out_path in video_path.items():
-        images_to_video(np.array(data_list["observation"][camera_name]["rgb"]), out_path=out_path)
+        images_to_video(np.array(data_list["observation"][camera_name]["rgb"]), out_path=out_path, fps=fps)
 
     with h5py.File(hdf5_path, "w") as f:
         create_hdf5_from_dict(f, data_list)
 
 
-def process_folder_to_hdf5_video(folder_path, hdf5_path, video_path):
+def process_folder_to_hdf5_video(folder_path, hdf5_path, video_path, fps=30.0):
     pkl_files = []
     for fname in os.listdir(folder_path):
         if fname.endswith(".pkl") and fname[:-4].isdigit():
@@ -107,4 +107,4 @@ def process_folder_to_hdf5_video(folder_path, hdf5_path, video_path):
             raise ValueError(f"Missing file {expected}.pkl")
         expected += 1
 
-    pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path)
+    pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path, fps=fps)
