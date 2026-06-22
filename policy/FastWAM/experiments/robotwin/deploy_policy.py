@@ -15,7 +15,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 
 if str(PROJECT_ROOT) not in sys.path:

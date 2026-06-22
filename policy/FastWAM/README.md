@@ -188,7 +188,7 @@ You still need to follow the official RoboTwin instructions from the
 [RoboTwin repository](https://github.com/RoboTwin-Platform/RoboTwin) to finish environment installation and download the required assets, then create the policy symlink:
 
 ```bash
-ln -sfn "$(pwd)/experiments/robotwin/fastwam_policy" "$(pwd)/third_party/RoboTwin/policy/fastwam_policy"
+ln -sfn "$(pwd)" "$(pwd)/third_party/RoboTwin/policy/FastWAM"
 ```
 
 Optional: evaluate released LIBERO checkpoint:
@@ -273,7 +273,7 @@ You still need to follow the official RoboTwin instructions from the
 Finish installation and download the required assets, then create the policy symlink:
 
 ```bash
-ln -sfn "$(pwd)/experiments/robotwin/fastwam_policy" "$(pwd)/third_party/RoboTwin/policy/fastwam_policy"
+ln -sfn "$(pwd)" "$(pwd)/third_party/RoboTwin/policy/FastWAM"
 ```
 
 Then run RoboTwin evaluation:

@@ -1,0 +1,269 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="1420" viewBox="0 0 1900 1420" role="img" aria-labelledby="title desc">
+  <title id="title">FastWAM MoT Detailed Network Structure</title>
+  <desc id="desc">Detailed architecture diagram for FastWAM MoT. It shows video and action pre-DiT embeddings, time modulation injection, RoPE on q and k, mixed attention with joint masks, expert-specific transformer post blocks, dimensional changes, and the video key-value cache inference path.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .panel { fill: #ffffff; stroke: #c7d0df; stroke-width: 2; }
+      .panel-soft { fill: #f2f6fc; stroke: #c7d0df; stroke-width: 2; }
+      .video { fill: #e8f3ff; stroke: #3f76b5; stroke-width: 2; }
+      .action { fill: #ecf7ee; stroke: #4b965d; stroke-width: 2; }
+      .time { fill: #fff1f2; stroke: #be5b67; stroke-width: 2; }
+      .rope { fill: #eef2ff; stroke: #6675c9; stroke-width: 2; }
+      .mask { fill: #fff7ed; stroke: #c47a22; stroke-width: 2; }
+      .mixed { fill: #fff4cf; stroke: #b7791f; stroke-width: 2; }
+      .cache { fill: #f4eaff; stroke: #845ab5; stroke-width: 2; }
+      .io { fill: #ffffff; stroke: #687383; stroke-width: 2; }
+      .dim { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.5; }
+      .note { fill: #fbfcff; stroke: #aab6c8; stroke-width: 1.5; stroke-dasharray: 8 6; }
+      .text { font-family: Inter, Arial, sans-serif; fill: #182033; font-size: 20px; }
+      .small { font-family: Inter, Arial, sans-serif; fill: #364152; font-size: 16px; }
+      .tiny { font-family: Inter, Arial, sans-serif; fill: #4b5563; font-size: 14px; }
+      .micro { font-family: Inter, Arial, sans-serif; fill: #52606d; font-size: 12px; }
+      .title { font-family: Inter, Arial, sans-serif; fill: #111827; font-size: 34px; font-weight: 700; }
+      .subtitle { font-family: Inter, Arial, sans-serif; fill: #4b5563; font-size: 18px; }
+      .label { font-family: Inter, Arial, sans-serif; fill: #111827; font-size: 17px; font-weight: 700; }
+      .label-sm { font-family: Inter, Arial, sans-serif; fill: #111827; font-size: 15px; font-weight: 700; }
+      .code { font-family: "JetBrains Mono", Consolas, monospace; fill: #1f2937; font-size: 14px; }
+      .code-sm { font-family: "JetBrains Mono", Consolas, monospace; fill: #334155; font-size: 12px; }
+      .arrow { stroke: #334155; stroke-width: 2.3; fill: none; marker-end: url(#arrowhead); }
+      .arrow-soft { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrowhead-soft); }
+      .arrow-video { stroke: #2563eb; stroke-width: 2.4; fill: none; marker-end: url(#arrowhead-video); }
+      .arrow-action { stroke: #16a34a; stroke-width: 2.4; fill: none; marker-end: url(#arrowhead-action); }
+      .arrow-time { stroke: #be123c; stroke-width: 2.2; fill: none; marker-end: url(#arrowhead-time); }
+      .arrow-rope { stroke: #4f46e5; stroke-width: 2.2; fill: none; marker-end: url(#arrowhead-rope); }
+      .arrow-mask { stroke: #c2410c; stroke-width: 2.2; fill: none; marker-end: url(#arrowhead-mask); }
+      .arrow-cache { stroke: #7c3aed; stroke-width: 2.3; fill: none; marker-end: url(#arrowhead-cache); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#334155" />
+    </marker>
+    <marker id="arrowhead-soft" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#64748b" />
+    </marker>
+    <marker id="arrowhead-video" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#2563eb" />
+    </marker>
+    <marker id="arrowhead-action" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#16a34a" />
+    </marker>
+    <marker id="arrowhead-time" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#be123c" />
+    </marker>
+    <marker id="arrowhead-rope" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#4f46e5" />
+    </marker>
+    <marker id="arrowhead-mask" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#c2410c" />
+    </marker>
+    <marker id="arrowhead-cache" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#7c3aed" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1900" height="1420" />
+
+  <text class="title" x="54" y="56">FastWAM MoT Detailed Network Structure</text>
+  <text class="subtitle" x="54" y="86">Expert-owned DiT blocks, shared mixed self-attention, explicit mask / RoPE / time-modulation injection and tensor dimensions.</text>
+
+  <rect class="note" x="1300" y="28" width="540" height="84" rx="10" />
+  <text class="small" x="1324" y="60">MoT init constraints:</text>
+  <text class="tiny" x="1324" y="84">experts include "video" and "action"; same num_layers, num_heads, attn_head_dim</text>
+  <text class="tiny" x="1324" y="104">hidden dims may differ: Dv != Da is OK after q/k/v projection to H*Dh</text>
+
+  <rect class="panel" x="45" y="132" width="1810" height="248" rx="16" />
+  <text class="label" x="70" y="166">0. Inputs produced before MoT</text>
+  <text class="code" x="70" y="190">FastWAM: video_pre = video_expert.pre_dit(...), action_pre = action_expert.pre_dit(...), then self.mot(...)</text>
+
+  <rect class="video" x="80" y="220" width="270" height="110" rx="10" />
+  <text class="label" x="108" y="252">Video latent path</text>
+  <text class="tiny" x="108" y="276">latent: [B, C, F, H, W]</text>
+  <text class="tiny" x="108" y="298">patchify + proj</text>
+  <text class="code-sm" x="108" y="320">x_v: [B, Sv=Fh w, Dv]</text>
+
+  <rect class="rope" x="382" y="220" width="250" height="110" rx="10" />
+  <text class="label" x="410" y="252">Video 3D RoPE</text>
+  <text class="tiny" x="410" y="276">frame + height + width freqs</text>
+  <text class="code-sm" x="410" y="298">freqs_v: [Sv, 1, Dh/2]</text>
+  <text class="tiny" x="410" y="320">applied later to q_v/k_v</text>
+
+  <rect class="time" x="665" y="220" width="285" height="110" rx="10" />
+  <text class="label" x="693" y="252">Video timestep embed</text>
+  <text class="tiny" x="693" y="276">sinusoidal -> MLP -> projection</text>
+  <text class="code-sm" x="693" y="298">t_mod_v: [B,6,Dv] or [B,Sv,6,Dv]</text>
+  <text class="tiny" x="693" y="320">split into shift/scale/gates</text>
+
+  <rect class="action" x="1010" y="220" width="270" height="110" rx="10" />
+  <text class="label" x="1038" y="252">Action latent path</text>
+  <text class="tiny" x="1038" y="276">action latents: [B, Sa, A]</text>
+  <text class="tiny" x="1038" y="298">linear action_encoder</text>
+  <text class="code-sm" x="1038" y="320">x_a: [B, Sa, Da]</text>
+
+  <rect class="rope" x="1312" y="220" width="230" height="110" rx="10" />
+  <text class="label" x="1340" y="252">Action 1D RoPE</text>
+  <text class="tiny" x="1340" y="276">position over action tokens</text>
+  <text class="code-sm" x="1340" y="298">freqs_a: [Sa, 1, Dh/2]</text>
+  <text class="tiny" x="1340" y="320">applied later to q_a/k_a</text>
+
+  <rect class="time" x="1580" y="220" width="230" height="110" rx="10" />
+  <text class="label" x="1608" y="252">Action timestep</text>
+  <text class="tiny" x="1608" y="276">sinusoidal -> MLP</text>
+  <text class="code-sm" x="1608" y="298">t_mod_a: [B, 6, Da]</text>
+  <text class="tiny" x="1608" y="320">AdaLN for action block</text>
+
+  <rect class="panel" x="45" y="410" width="1810" height="675" rx="16" />
+  <text class="label" x="70" y="444">1. One MoT layer l: expert-specific DiT block internals plus mixed attention</text>
+  <text class="code" x="70" y="468">for layer_idx in range(num_layers): build per-expert Q/K/V -> concat -> flash_attention(mask) -> split -> expert post blocks</text>
+
+  <rect class="video" x="78" y="505" width="220" height="128" rx="10" />
+  <text class="label" x="103" y="536">Video x_v</text>
+  <text class="code-sm" x="103" y="561">[B, Sv, Dv]</text>
+  <text class="tiny" x="103" y="585">residual_x_v saved</text>
+  <text class="tiny" x="103" y="608">block = video.blocks[l]</text>
+
+  <rect class="time" x="335" y="480" width="290" height="166" rx="10" />
+  <text class="label" x="360" y="512">Time modulation split</text>
+  <text class="code-sm" x="360" y="537">block.modulation + t_mod_v</text>
+  <text class="tiny" x="360" y="562">chunk(6) along modulation dim</text>
+  <text class="code-sm" x="360" y="586">shift_msa, scale_msa, gate_msa</text>
+  <text class="code-sm" x="360" y="610">shift_mlp, scale_mlp, gate_mlp</text>
+  <text class="tiny" x="360" y="632">same logic for action with Da</text>
+
+  <rect class="video" x="665" y="480" width="260" height="166" rx="10" />
+  <text class="label" x="690" y="512">Video MSA input</text>
+  <text class="code-sm" x="690" y="537">norm1(x_v): [B,Sv,Dv]</text>
+  <text class="code-sm" x="690" y="561">modulate = x*(1+scale)+shift</text>
+  <text class="tiny" x="690" y="585">AdaLN injects time here</text>
+  <text class="code-sm" x="690" y="610">attn_in_v: [B,Sv,Dv]</text>
+
+  <rect class="video" x="965" y="480" width="300" height="166" rx="10" />
+  <text class="label" x="990" y="512">Video Q/K/V projections</text>
+  <text class="code-sm" x="990" y="537">q = norm_q(Wq attn_in_v)</text>
+  <text class="code-sm" x="990" y="561">k = norm_k(Wk attn_in_v)</text>
+  <text class="code-sm" x="990" y="585">v = Wv attn_in_v</text>
+  <text class="code-sm" x="990" y="610">q/k/v: [B,Sv,H*Dh]</text>
+
+  <rect class="rope" x="1310" y="480" width="250" height="166" rx="10" />
+  <text class="label" x="1335" y="512">RoPE on video q/k</text>
+  <text class="code-sm" x="1335" y="537">q_v = rope_apply(q, freqs_v)</text>
+  <text class="code-sm" x="1335" y="561">k_v = rope_apply(k, freqs_v)</text>
+  <text class="tiny" x="1335" y="585">v is not RoPE-rotated</text>
+  <text class="code-sm" x="1335" y="610">freqs_v broadcasts over heads</text>
+
+  <rect class="action" x="78" y="705" width="220" height="128" rx="10" />
+  <text class="label" x="103" y="736">Action x_a</text>
+  <text class="code-sm" x="103" y="761">[B, Sa, Da]</text>
+  <text class="tiny" x="103" y="785">residual_x_a saved</text>
+  <text class="tiny" x="103" y="808">block = action.blocks[l]</text>
+
+  <rect class="action" x="665" y="680" width="260" height="166" rx="10" />
+  <text class="label" x="690" y="712">Action MSA input</text>
+  <text class="code-sm" x="690" y="737">norm1(x_a): [B,Sa,Da]</text>
+  <text class="code-sm" x="690" y="761">modulate via shift_msa_a/scale_msa_a</text>
+  <text class="tiny" x="690" y="785">time injected here too</text>
+  <text class="code-sm" x="690" y="810">attn_in_a: [B,Sa,Da]</text>
+
+  <rect class="action" x="965" y="680" width="300" height="166" rx="10" />
+  <text class="label" x="990" y="712">Action Q/K/V projections</text>
+  <text class="code-sm" x="990" y="737">q = norm_q(Wq attn_in_a)</text>
+  <text class="code-sm" x="990" y="761">k = norm_k(Wk attn_in_a)</text>
+  <text class="code-sm" x="990" y="785">v = Wv attn_in_a</text>
+  <text class="code-sm" x="990" y="810">q/k/v: [B,Sa,H*Dh]</text>
+
+  <rect class="rope" x="1310" y="680" width="250" height="166" rx="10" />
+  <text class="label" x="1335" y="712">RoPE on action q/k</text>
+  <text class="code-sm" x="1335" y="737">q_a = rope_apply(q, freqs_a)</text>
+  <text class="code-sm" x="1335" y="761">k_a = rope_apply(k, freqs_a)</text>
+  <text class="tiny" x="1335" y="785">v is not RoPE-rotated</text>
+  <text class="code-sm" x="1335" y="810">freqs_a: action position</text>
+
+  <rect class="mixed" x="1588" y="555" width="220" height="218" rx="12" />
+  <text class="label" x="1614" y="586">Concat Q/K/V</text>
+  <text class="code-sm" x="1614" y="612">q_cat: [B,S,H*Dh]</text>
+  <text class="code-sm" x="1614" y="636">k_cat: [B,S,H*Dh]</text>
+  <text class="code-sm" x="1614" y="660">v_cat: [B,S,H*Dh]</text>
+  <text class="tiny" x="1614" y="684">S = Sv + Sa</text>
+  <text class="tiny" x="1614" y="708">attention dims match</text>
+  <text class="tiny" x="1614" y="732">even if Dv != Da</text>
+  <text class="code-sm" x="1614" y="756">flash_attention(...)</text>
+
+  <rect class="mask" x="1035" y="885" width="360" height="170" rx="12" />
+  <text class="label" x="1060" y="918">Joint MoT attention_mask</text>
+  <text class="code-sm" x="1060" y="944">mask: [S, S], S=Sv+Sa</text>
+  <text class="tiny" x="1060" y="968">rows are queries, columns are keys</text>
+  <rect x="1062" y="985" width="66" height="42" fill="#dbeafe" stroke="#2563eb" />
+  <rect x="1128" y="985" width="66" height="42" fill="#fee2e2" stroke="#ef4444" />
+  <rect x="1062" y="1027" width="66" height="42" fill="#bbf7d0" stroke="#16a34a" />
+  <rect x="1128" y="1027" width="66" height="42" fill="#dcfce7" stroke="#16a34a" />
+  <text class="micro" x="1075" y="1011">v->v</text>
+  <text class="micro" x="1140" y="1011">v->a no</text>
+  <text class="micro" x="1069" y="1053">a->v first</text>
+  <text class="micro" x="1143" y="1053">a->a</text>
+  <text class="tiny" x="1215" y="1006">video->video: video mask</text>
+  <text class="tiny" x="1215" y="1030">action->action: True</text>
+  <text class="tiny" x="1215" y="1054">action->video: first frame only</text>
+
+  <rect class="mixed" x="1465" y="885" width="300" height="170" rx="12" />
+  <text class="label" x="1490" y="918">Mixed attention output</text>
+  <text class="code-sm" x="1490" y="944">mixed: [B,S,H*Dh]</text>
+  <text class="code-sm" x="1490" y="970">mixed_v = mixed[:, :Sv]</text>
+  <text class="code-sm" x="1490" y="996">mixed_a = mixed[:, Sv:S]</text>
+  <text class="tiny" x="1490" y="1024">split by expert sequence lengths</text>
+
+  <rect class="video" x="80" y="905" width="410" height="150" rx="12" />
+  <text class="label" x="108" y="938">Video expert post block</text>
+  <text class="code-sm" x="108" y="964">x = gate(residual_x_v, gate_msa_v, o_v(mixed_v))</text>
+  <text class="code-sm" x="108" y="990">x += cross_attn(norm3(x), context_v, context_mask_v)</text>
+  <text class="code-sm" x="108" y="1016">mlp_in = modulate(norm2(x), shift_mlp_v, scale_mlp_v)</text>
+  <text class="code-sm" x="108" y="1042">x_v_next = gate(x, gate_mlp_v, ffn_v(mlp_in))</text>
+
+  <rect class="action" x="545" y="905" width="410" height="150" rx="12" />
+  <text class="label" x="573" y="938">Action expert post block</text>
+  <text class="code-sm" x="573" y="964">x = gate(residual_x_a, gate_msa_a, o_a(mixed_a))</text>
+  <text class="code-sm" x="573" y="990">x += cross_attn(norm3(x), context_a, context_mask_a)</text>
+  <text class="code-sm" x="573" y="1016">mlp_in = modulate(norm2(x), shift_mlp_a, scale_mlp_a)</text>
+  <text class="code-sm" x="573" y="1042">x_a_next = gate(x, gate_mlp_a, ffn_a(mlp_in))</text>
+
+  <path class="arrow-video" d="M298 568 C320 568, 320 563, 335 563" />
+  <path class="arrow-time" d="M625 563 C645 563, 645 563, 665 563" />
+  <path class="arrow-video" d="M925 563 L965 563" />
+  <path class="arrow-rope" d="M1265 563 L1310 563" />
+  <path class="arrow-video" d="M1560 563 C1575 575, 1578 598, 1588 630" />
+
+  <path class="arrow-action" d="M298 768 C475 768, 500 763, 665 763" />
+  <path class="arrow-action" d="M925 763 L965 763" />
+  <path class="arrow-rope" d="M1265 763 L1310 763" />
+  <path class="arrow-action" d="M1560 763 C1575 750, 1578 725, 1588 690" />
+  <path class="arrow-mask" d="M1395 970 C1450 940, 1510 880, 1608 773" />
+  <path class="arrow" d="M1698 773 C1698 820, 1672 852, 1615 885" />
+  <path class="arrow-video" d="M1465 970 C1160 955, 860 950, 490 980" />
+  <path class="arrow-action" d="M1465 1010 C1190 1040, 950 1035, 955 990" />
+
+  <rect class="dim" x="80" y="1095" width="875" height="100" rx="12" />
+  <text class="label" x="108" y="1128">Dimension summary inside one MoT layer</text>
+  <text class="code-sm" x="108" y="1154">x_v [B,Sv,Dv] -> q/k/v_v [B,Sv,H*Dh] -> mixed_v [B,Sv,H*Dh] -> o_v -> [B,Sv,Dv]</text>
+  <text class="code-sm" x="108" y="1178">x_a [B,Sa,Da] -> q/k/v_a [B,Sa,H*Dh] -> mixed_a [B,Sa,H*Dh] -> o_a -> [B,Sa,Da]</text>
+
+  <rect class="dim" x="1010" y="1095" width="755" height="100" rx="12" />
+  <text class="label" x="1038" y="1128">Transformer block structure preserved per expert</text>
+  <text class="code-sm" x="1038" y="1154">AdaLN-MSA: norm1 -> shift/scale -> qkv -> RoPE(q,k) -> mixed attn -> o -> gated residual</text>
+  <text class="code-sm" x="1038" y="1178">CrossAttn: norm3(x), context; AdaLN-MLP: norm2 -> shift/scale -> ffn -> gated residual</text>
+
+  <rect class="panel" x="45" y="1230" width="1810" height="145" rx="16" />
+  <text class="label" x="70" y="1264">2. Inference acceleration: video K/V cache for action denoising</text>
+  <rect class="video" x="80" y="1295" width="310" height="58" rx="10" />
+  <text class="label-sm" x="105" y="1320">prefill video branch once</text>
+  <text class="code-sm" x="105" y="1341">cache[l] = {k_v, v_v}</text>
+  <rect class="cache" x="450" y="1295" width="355" height="58" rx="10" />
+  <text class="label-sm" x="475" y="1320">cached video K/V per layer</text>
+  <text class="code-sm" x="475" y="1341">k_v/v_v: [B,Sv,H*Dh]</text>
+  <rect class="action" x="865" y="1295" width="355" height="58" rx="10" />
+  <text class="label-sm" x="890" y="1320">each action denoise step</text>
+  <text class="code-sm" x="890" y="1341">recompute q_a,k_a,v_a</text>
+  <rect class="mixed" x="1280" y="1295" width="420" height="58" rx="10" />
+  <text class="label-sm" x="1305" y="1320">action query attends cached video + action</text>
+  <text class="code-sm" x="1305" y="1341">Q=q_a, K/V=cat(video cache, action K/V)</text>
+  <path class="arrow-video" d="M390 1324 L450 1324" />
+  <path class="arrow-cache" d="M805 1324 L865 1324" />
+  <path class="arrow-action" d="M1220 1324 L1280 1324" />
+</svg>

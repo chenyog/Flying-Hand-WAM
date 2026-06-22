@@ -187,7 +187,7 @@ pip install mujoco==3.3.2
 再创建 policy 软链接：
 
 ```bash
-ln -sfn "$(pwd)/experiments/robotwin/fastwam_policy" "$(pwd)/third_party/RoboTwin/policy/fastwam_policy"
+ln -sfn "$(pwd)" "$(pwd)/third_party/RoboTwin/policy/FastWAM"
 ```
 
 一键评测 release 的 LIBERO 权重：
@@ -273,7 +273,7 @@ python experiments/libero/run_libero_manager.py task={task_name} ckpt={ckpt_path
 再创建 policy 软链接：
 
 ```bash
-ln -sfn "$(pwd)/experiments/robotwin/fastwam_policy" "$(pwd)/third_party/RoboTwin/policy/fastwam_policy"
+ln -sfn "$(pwd)" "$(pwd)/third_party/RoboTwin/policy/FastWAM"
 ```
 
 之后再运行 RoboTwin 评测：

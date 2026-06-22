@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,11 +16,13 @@ import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import yaml
 
 
 CHUNK_SIZE = 1000
 CAMERAS = ("head_camera", "wrist_camera")
 STATE_NAMES = ["x", "y", "z", "yaw", "grasp"]
+FPS_WARN_TOL = 1e-3
 
 
 def default_robotwin_root() -> Path:
@@ -274,7 +277,84 @@ def link_or_copy(src: Path, dst: Path, copy_videos: bool) -> None:
         os.symlink(src, dst)
 
 
-def info_json(total_episodes: int, total_frames: int, total_tasks: int, fps: int, video_meta: dict) -> dict:
+def reencode_video_with_fps(src: Path, dst: Path, fps: float, expected_frames: int) -> None:
+    meta = video_info(src)
+    width = int(meta["width"])
+    height = int(meta["height"])
+    cap = cv2.VideoCapture(str(src))
+    if not cap.isOpened():
+        raise RuntimeError(f"Failed to open video for re-encoding: {src}")
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+
+    ffmpeg = subprocess.Popen(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "bgr24",
+            "-video_size",
+            f"{width}x{height}",
+            "-framerate",
+            f"{fps:g}",
+            "-i",
+            "-",
+            "-pix_fmt",
+            "yuv420p",
+            "-vcodec",
+            "libx264",
+            "-crf",
+            "23",
+            str(dst),
+        ],
+        stdin=subprocess.PIPE,
+    )
+
+    frame_count = 0
+    try:
+        assert ffmpeg.stdin is not None
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if frame.shape[0] != height or frame.shape[1] != width:
+                raise ValueError(f"Unexpected frame shape in {src}: {frame.shape}, expected {(height, width)}")
+            ffmpeg.stdin.write(frame.tobytes())
+            frame_count += 1
+    finally:
+        cap.release()
+        if ffmpeg.stdin is not None:
+            ffmpeg.stdin.close()
+
+    if ffmpeg.wait() != 0:
+        raise IOError(f"ffmpeg failed while re-encoding {src} to {dst}")
+    if frame_count != expected_frames:
+        raise ValueError(f"Frame count mismatch after reading {src}: read={frame_count}, expected={expected_frames}")
+
+
+def write_or_link_video(src: Path, dst: Path, copy_videos: bool, dataset_fps: float, expected_frames: int) -> None:
+    meta = video_info(src)
+    if meta["frames"] != expected_frames:
+        raise ValueError(f"Frame count mismatch for {src}: video={meta['frames']} hdf5={expected_frames}")
+
+    if abs(float(meta["fps"]) - float(dataset_fps)) > FPS_WARN_TOL:
+        print(
+            f"Re-encoding {src} with setting fps={dataset_fps:g} "
+            f"(source mp4 fps={meta['fps']:.6g})."
+        )
+        reencode_video_with_fps(src, dst, dataset_fps, expected_frames)
+        return
+
+    link_or_copy(src, dst, copy_videos)
+
+
+def info_json(total_episodes: int, total_frames: int, total_tasks: int, fps: float, video_meta: dict) -> dict:
     features = {
         "observation.state": {
             "dtype": "float32",
@@ -347,10 +427,7 @@ def convert_task(task_id: str, args: argparse.Namespace) -> Path:
         camera: video_info(src_root / "video" / camera / f"episode{first_ep}.mp4")
         for camera in CAMERAS
     }
-    fps_values = {round(meta["fps"]) for meta in video_meta.values()}
-    if len(fps_values) != 1:
-        raise ValueError(f"Camera FPS mismatch in {src_root}: {video_meta}")
-    fps = int(next(iter(fps_values)))
+    fps = args.dataset_fps
 
     task_to_index: dict[str, int] = {}
     task_rows: list[dict] = []
@@ -377,13 +454,14 @@ def convert_task(task_id: str, args: argparse.Namespace) -> Path:
 
         for camera in CAMERAS:
             src_video = src_root / "video" / camera / f"episode{ep}.mp4"
-            meta = video_info(src_video)
-            if meta["frames"] != length:
-                raise ValueError(f"Frame count mismatch for {src_video}: video={meta['frames']} hdf5={length}")
-            if int(round(meta["fps"])) != fps:
-                raise ValueError(f"FPS mismatch for {src_video}: {meta['fps']} vs dataset fps {fps}")
             dst_video = out_root / f"videos/chunk-{chunk:03d}/observation.images.{camera}/episode_{ep:06d}.mp4"
-            link_or_copy(src_video, dst_video, args.copy_videos)
+            write_or_link_video(
+                src=src_video,
+                dst=dst_video,
+                copy_videos=args.copy_videos,
+                dataset_fps=fps,
+                expected_frames=length,
+            )
 
         action = np.concatenate([target[1:], target[-1:]], axis=0).astype(np.float32)
         rows = []
@@ -435,6 +513,20 @@ def main() -> None:
     args = parse_args()
     if args.all_tasks == (args.task_id is not None):
         raise ValueError("Pass exactly one of --task-id or --all-tasks.")
+
+    setting_path = args.robotwin_root / "task_config" / f"{args.setting}.yml"
+    with setting_path.open("r", encoding="utf-8") as f:
+        setting = yaml.safe_load(f)
+    timestep, save_freq = float(setting["timestep"]), float(setting["save_freq"])
+    if timestep <= 0 or save_freq <= 0:
+        raise ValueError(f"`timestep` and `save_freq` must be positive in {setting_path}")
+    fps = 1.0 / (timestep * save_freq)
+    args.dataset_fps = int(round(fps)) if abs(fps - round(fps)) < FPS_WARN_TOL else fps
+    print(
+        f"Using dataset fps={args.dataset_fps:g} from "
+        f"{setting_path} "
+        "(computed as 1 / (timestep * save_freq))."
+    )
 
     if args.all_tasks:
         task_ids = sorted(p.name for p in (args.robotwin_root / "data" / "flying_hand").iterdir() if p.is_dir())

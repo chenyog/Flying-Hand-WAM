@@ -4,7 +4,7 @@ RobotWin single-task evaluation entrypoint (Hydra).
 Features:
 - Read `configs/sim_robotwin.yaml`.
 - Check or create the symlink:
-  `RoboTwin/policy/fastwam -> experiments/robotwin/fastwam`.
+  `RoboTwin/policy/FastWAM -> policy/FastWAM`.
 - Forward config overrides to the official RoboTwin entrypoint
   `script/eval_policy.py` and save logs.
 
@@ -115,17 +115,13 @@ def _ensure_policy_symlink(robotwin_root: Path, policy_source_dir: Path, policy_
         policy_target.symlink_to(source_resolved, target_is_directory=True)
         return policy_target
 
-    if policy_target.is_symlink():
-        target_resolved = policy_target.resolve()
-        if target_resolved != source_resolved:
-            raise RuntimeError(
-                f"Policy symlink conflict: {policy_target} -> {target_resolved}, "
-                f"expected -> {source_resolved}"
-            )
+    target_resolved = policy_target.resolve()
+    if target_resolved == source_resolved:
         return policy_target
 
     raise RuntimeError(
-        f"Path already exists and is not a symlink: {policy_target}. "
+        f"Policy path conflict: {policy_target} -> {target_resolved}, "
+        f"expected -> {source_resolved}. "
         "Please handle it manually to avoid overriding existing policy files."
     )
 
@@ -162,15 +158,17 @@ def main(cfg: DictConfig):
     if not robotwin_root.exists():
         raise FileNotFoundError(f"RoboTwin root not found: {robotwin_root}")
 
-    if str(cfg.EVALUATION.policy_name) != FASTWAM_POLICY_DIR.name:
+    if str(cfg.EVALUATION.policy_name) == FASTWAM_POLICY_DIR.name:
+        policy_source_dir = FASTWAM_POLICY_DIR
+    else:
         policy_source_dir = (PROJECT_ROOT / "experiments" / "robotwin" / str(cfg.EVALUATION.policy_name)).resolve()
         if not policy_source_dir.is_dir():
             raise FileNotFoundError(f"Policy source directory not found: {policy_source_dir}")
-        _ensure_policy_symlink(
-            robotwin_root=robotwin_root,
-            policy_source_dir=policy_source_dir,
-            policy_name=str(cfg.EVALUATION.policy_name),
-        )
+    _ensure_policy_symlink(
+        robotwin_root=robotwin_root,
+        policy_source_dir=policy_source_dir,
+        policy_name=str(cfg.EVALUATION.policy_name),
+    )
 
     output_dir = _resolve_path(str(cfg.EVALUATION.output_dir), base=PROJECT_ROOT)
     run_ts = output_dir.name
@@ -235,8 +233,6 @@ def main(cfg: DictConfig):
         sys.executable,
         "-u",
         "script/eval_policy.py",
-        "--config",
-        f"policy/{cfg.EVALUATION.policy_name}/experiments/robotwin/fastwam_policy/deploy_policy.yml",
         "--overrides",
         *overrides,
     ]
