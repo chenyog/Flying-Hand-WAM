@@ -62,12 +62,8 @@ def _resolve_optional_path(path_value: Any, *, base: Path) -> Path | None:
 
 def _resolve_dataset_stats_path(cfg: DictConfig, ckpt_path: Path) -> Path:
     explicit = _resolve_optional_path(cfg.EVALUATION.dataset_stats_path, base=PROJECT_ROOT)
-    candidates: list[Path] = []
-    if explicit is not None:
-        candidates.append(explicit)
-
-    for parent in list(ckpt_path.parents)[:4]:
-        candidates.append((parent / "dataset_stats.json").resolve())
+    candidates = [] if explicit is None else [explicit]
+    candidates.extend((parent / "dataset_stats.json").resolve() for parent in list(ckpt_path.parents)[:4])
 
     seen: set[Path] = set()
     for path in candidates:
@@ -83,24 +79,6 @@ def _resolve_dataset_stats_path(cfg: DictConfig, ckpt_path: Path) -> Path:
         "EVALUATION.dataset_stats_path and checkpoint parent directories. "
         "Please pass EVALUATION.dataset_stats_path=/path/to/dataset_stats.json."
     )
-
-
-def _resolve_ckpt_tag(ckpt_path: Path) -> str:
-    parts = ckpt_path.resolve().parts
-    if "runs" in parts:
-        runs_idx = parts.index("runs")
-        if runs_idx + 2 >= len(parts):
-            raise ValueError(
-                f"`ckpt` under runs must follow .../runs/<task>/<date_dir>/..., got: {ckpt_path}"
-            )
-        task_name = parts[runs_idx + 1]
-        date_dir = parts[runs_idx + 2]
-        if task_name == "" or date_dir == "":
-            raise ValueError(
-                f"`ckpt` under runs must follow .../runs/<task>/<date_dir>/..., got: {ckpt_path}"
-            )
-        return f"{task_name}_{date_dir}"
-    return ckpt_path.stem
 
 
 def _ensure_policy_symlink(robotwin_root: Path, policy_source_dir: Path, policy_name: str) -> Path:
@@ -152,7 +130,6 @@ def main(cfg: DictConfig):
     ckpt_path = _resolve_path(str(cfg.ckpt), base=PROJECT_ROOT)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    ckpt_tag = _resolve_ckpt_tag(ckpt_path)
 
     robotwin_root = _resolve_path(str(cfg.EVALUATION.robotwin_root), base=PROJECT_ROOT)
     if not robotwin_root.exists():
@@ -171,28 +148,12 @@ def main(cfg: DictConfig):
     )
 
     output_dir = _resolve_path(str(cfg.EVALUATION.output_dir), base=PROJECT_ROOT)
-    run_ts = output_dir.name
-    if run_ts == "":
-        raise ValueError(f"Invalid EVALUATION.output_dir (missing run_ts): {output_dir}")
-    run_output_dir = (
-        PROJECT_ROOT
-        / "evaluate_results"
-        / ("flying_hand" if str(cfg.EVALUATION.task_config).startswith("flying_hand") else "robotwin")
-        / ckpt_tag
-        / run_ts
+    output_dir.mkdir(parents=True, exist_ok=True)
+    task_label = str(cfg.EVALUATION.task_name).replace("/", "__")
+    log_file = output_dir / (
+        f"eval_{task_label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
-    run_output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = run_output_dir / (
-        f"eval_{str(cfg.EVALUATION.task_name)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    )
-    robotwin_eval_base = (
-        PROJECT_ROOT
-        / "evaluate_results"
-        / ("flying_hand" if str(cfg.EVALUATION.task_config).startswith("flying_hand") else "robotwin")
-        / ckpt_tag
-        / run_ts
-        / str(cfg.EVALUATION.task_name)
-    )
+    eval_base = output_dir / str(cfg.EVALUATION.task_name)
 
     sim_cfg_path = (PROJECT_ROOT / "configs" / HydraConfig.get().job.config_name).resolve()
     sim_task = HydraConfig.get().runtime.choices.get("task")
@@ -210,7 +171,7 @@ def main(cfg: DictConfig):
 
     _append_override(overrides, "sim_cfg_path", str(sim_cfg_path))
     _append_override(overrides, "sim_task", sim_task)
-    _append_override(overrides, "eval_output_dir", str(robotwin_eval_base))
+    _append_override(overrides, "eval_output_dir", str(eval_base))
     _append_override(overrides, "mixed_precision", cfg.mixed_precision)
     _append_override(overrides, "device", cfg.EVALUATION.device)
     _append_override(overrides, "dataset_stats_path", str(dataset_stats_path))
@@ -240,6 +201,7 @@ def main(cfg: DictConfig):
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = str(cfg.gpu_id)
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("DIFFSYNTH_MODEL_BASE_PATH", str(PROJECT_ROOT / "checkpoints"))
 
     with open(log_file, "w", encoding="utf-8") as log_f:
         process = subprocess.Popen(
@@ -265,7 +227,7 @@ def main(cfg: DictConfig):
     print(f"Evaluation finished successfully. Log saved to: {log_file}")
     OmegaConf.save(
         config=cfg,
-        f=str(run_output_dir / f"eval_config_{str(cfg.EVALUATION.task_name)}.yaml"),
+        f=str(output_dir / f"eval_config_{task_label}.yaml"),
     )
 
 

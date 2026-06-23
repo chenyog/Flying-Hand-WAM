@@ -537,7 +537,10 @@ class FlyingHandBaseTask(gym.Env):
                 obs["observation"][name].update(rgb[name])
         self.now_obs = deepcopy(obs)
         if self.eval_video_path is not None:
-            self.eval_video_ffmpeg.stdin.write(obs["observation"][wrist]["rgb"].tobytes())
+            video_camera = self.cameras.wrist_camera_name
+            if video_camera not in obs["observation"]:
+                video_camera = next(iter(obs["observation"]))
+            self.eval_video_ffmpeg.stdin.write(obs["observation"][video_camera]["rgb"].tobytes())
         return obs
 
     def _take_picture(self):

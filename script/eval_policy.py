@@ -68,8 +68,6 @@ def main(usr_args):
     # checkpoint_num = usr_args['checkpoint_num']
     policy_name = usr_args["policy_name"]
     instruction_type = usr_args["instruction_type"]
-    save_dir = None
-    video_save_dir = None
     video_size = None
 
     get_model = eval_function_decorator(policy_name, "get_model")
@@ -120,21 +118,24 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    eval_output_dir = usr_args.get("eval_output_dir")
+    if eval_output_dir is None or str(eval_output_dir).strip().lower() in {"", "none", "null"}:
+        save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    else:
+        save_dir = Path(eval_output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
-        video_save_dir = save_dir
         camera_config = get_camera_config(args["camera"]["head_camera_type"])
         video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
-        video_save_dir.mkdir(parents=True, exist_ok=True)
-        args["eval_video_save_dir"] = video_save_dir
+        save_dir.mkdir(parents=True, exist_ok=True)
+        args["eval_video_save_dir"] = save_dir
 
     # output camera config
     print("============= Config =============\n")
-    if "flying-hand" in embodiment_type:
+    if "cluttered_board" in args["domain_randomization"]:
         print("\033[95mCluttered Board:\033[0m " + str(args["domain_randomization"]["cluttered_board"]))
-    else:
+    if "cluttered_table" in args["domain_randomization"]:
         print("\033[95mMessy Table:\033[0m " + str(args["domain_randomization"]["cluttered_table"]))
     print("\033[95mRandom Background:\033[0m " + str(args["domain_randomization"]["random_background"]))
     if args["domain_randomization"]["random_background"]:
@@ -142,9 +143,9 @@ def main(usr_args):
     print("\033[95mRandom Light:\033[0m " + str(args["domain_randomization"]["random_light"]))
     if args["domain_randomization"]["random_light"]:
         print(" - Crazy Random Light Rate: " + str(args["domain_randomization"]["crazy_random_light_rate"]))
-    if "flying-hand" in embodiment_type:
+    if "random_board_height" in args["domain_randomization"]:
         print("\033[95mRandom Board Height:\033[0m " + str(args["domain_randomization"]["random_board_height"]))
-    else:
+    if "random_table_height" in args["domain_randomization"]:
         print("\033[95mRandom Table Height:\033[0m " + str(args["domain_randomization"]["random_table_height"]))
     print("\033[95mRandom Head Camera Distance:\033[0m " + str(args["domain_randomization"]["random_head_camera_dis"]))
 
@@ -157,14 +158,14 @@ def main(usr_args):
 
     TASK_ENV = class_decorator(args["task_name"])
     args["policy_name"] = policy_name
-    usr_args["left_arm_dim"] = len(args["left_embodiment_config"]["arm_joints_name"][0])
-    usr_args["right_arm_dim"] = len(args["right_embodiment_config"]["arm_joints_name"][1])
+    usr_args["left_arm_dim"] = len(args["left_embodiment_config"].get("arm_joints_name", [[]])[0])
+    usr_args["right_arm_dim"] = len(args["right_embodiment_config"].get("arm_joints_name", [[], []])[1])
 
     seed = usr_args["seed"]
 
     st_seed = 100000 * (1 + seed)
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("eval_num_episodes", 100))
     topk = 1
 
     model = get_model(usr_args)
@@ -180,7 +181,7 @@ def main(usr_args):
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
 
-    file_path = os.path.join(save_dir, f"_result.txt")
+    file_path = save_dir / "_result.txt"
     with open(file_path, "w") as file:
         file.write(f"Timestamp: {current_time}\n\n")
         file.write(f"Instruction Type: {instruction_type}\n\n")
@@ -332,6 +333,7 @@ def eval_policy(task_name,
 def parse_args_and_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str)
+    parser.add_argument("--eval_output_dir", type=str)
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -357,6 +359,8 @@ def parse_args_and_config():
     if args.overrides:
         overrides = parse_override_pairs(args.overrides)
         config.update(overrides)
+    if args.eval_output_dir is not None:
+        config["eval_output_dir"] = args.eval_output_dir
 
     return config
 

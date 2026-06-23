@@ -28,24 +28,6 @@ def _resolve_path(path_str: str, *, base: Path) -> Path:
     return path.resolve()
 
 
-def _resolve_ckpt_tag(ckpt_path: Path) -> str:
-    parts = ckpt_path.resolve().parts
-    if "runs" in parts:
-        runs_idx = parts.index("runs")
-        if runs_idx + 2 >= len(parts):
-            raise ValueError(
-                f"`ckpt` under runs must follow .../runs/<task>/<date_dir>/..., got: {ckpt_path}"
-            )
-        task_name = parts[runs_idx + 1]
-        date_dir = parts[runs_idx + 2]
-        if task_name == "" or date_dir == "":
-            raise ValueError(
-                f"`ckpt` under runs must follow .../runs/<task>/<date_dir>/..., got: {ckpt_path}"
-            )
-        return f"{task_name}_{date_dir}"
-    return ckpt_path.stem
-
-
 def _is_blocked_override(raw_override: str) -> bool:
     key = raw_override.split("=", 1)[0].lstrip("+~")
     if key in {
@@ -63,7 +45,17 @@ def _collect_worker_overrides() -> list[str]:
     return [ov for ov in HydraConfig.get().overrides.task if not _is_blocked_override(ov)]
 
 
-def _load_all_tasks(robotwin_root: Path) -> list[str]:
+def _load_all_tasks(robotwin_root: Path, cfg: DictConfig) -> list[str]:
+    dataset_dirs = list(cfg.data.train.get("dataset_dirs", []))
+    if len(dataset_dirs) > 1:
+        data_root = robotwin_root / "data"
+        tasks = []
+        for dataset_dir in dataset_dirs:
+            name = Path(str(dataset_dir)).name
+            matches = sorted(path for path in data_root.glob(f"*/{name}") if path.is_dir())
+            tasks.append(matches[0].relative_to(data_root).as_posix() if matches else name)
+        return tasks
+
     eval_step_limit_file = robotwin_root / "task_config" / "_eval_step_limit.yml"
     if not eval_step_limit_file.exists():
         raise FileNotFoundError(f"Task list file not found: {eval_step_limit_file}")
@@ -81,20 +73,6 @@ def _load_all_tasks(robotwin_root: Path) -> list[str]:
         seen.add(task)
         dedup_tasks.append(task)
     return dedup_tasks
-
-
-def _load_all_flying_hand_tasks(robotwin_root: Path) -> list[str]:
-    flying_hand_dir = robotwin_root / "data" / "flying_hand"
-    if not flying_hand_dir.is_dir():
-        raise FileNotFoundError(f"Flying-Hand task directory not found: {flying_hand_dir}")
-    tasks = [
-        f"flying_hand/{path.name}"
-        for path in sorted(flying_hand_dir.iterdir(), key=lambda p: p.name)
-        if path.is_dir()
-    ]
-    if not tasks:
-        raise ValueError(f"No Flying-Hand tasks found in: {flying_hand_dir}")
-    return tasks
 
 
 def _parse_success_rate(result_file: Path) -> float:
@@ -115,16 +93,6 @@ def _parse_success_rate(result_file: Path) -> float:
     return last_value
 
 
-def _phase_result_filename(phase: str) -> str:
-    if phase == "flying_hand":
-        return "_result.txt"
-    if phase == "clean":
-        return "_result_clean.txt"
-    if phase == "random":
-        return "_result_random.txt"
-    raise ValueError(f"Unsupported phase: {phase}")
-
-
 def _mean_or_none(values: list[float | None]) -> float | None:
     valid = [v for v in values if v is not None]
     if len(valid) == 0:
@@ -142,7 +110,6 @@ def _to_jsonable(value: float | None) -> float | None:
 class RunningState:
     task_name: str
     gpu_id: int
-    phase: str  # "clean" | "random"
     process: subprocess.Popen[str]
 
 
@@ -156,7 +123,6 @@ def main(cfg: DictConfig):
     ckpt_path = _resolve_path(str(cfg.ckpt), base=PROJECT_ROOT)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    ckpt_tag = _resolve_ckpt_tag(ckpt_path)
 
     robotwin_root = _resolve_path(str(cfg.EVALUATION.robotwin_root), base=PROJECT_ROOT)
     if not robotwin_root.exists():
@@ -171,40 +137,26 @@ def main(cfg: DictConfig):
     gpu_ids = list(range(num_gpus))
 
     output_dir = _resolve_path(str(cfg.EVALUATION.output_dir), base=PROJECT_ROOT)
-    run_ts = output_dir.name
-    if run_ts == "":
-        raise ValueError(f"Invalid EVALUATION.output_dir (missing run_ts): {output_dir}")
-    is_flying_hand = str(cfg.EVALUATION.task_config).startswith("flying_hand")
-    run_output_dir = PROJECT_ROOT / "evaluate_results" / ("flying_hand" if is_flying_hand else "robotwin") / ckpt_tag / run_ts
-    run_output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    manager_log = run_output_dir / "manager.log"
-    failed_tasks_file = run_output_dir / "failed_tasks.txt"
-    summary_csv = run_output_dir / "summary.csv"
-    summary_json = run_output_dir / "summary.json"
+    manager_log = output_dir / "manager.log"
+    failed_tasks_file = output_dir / "failed_tasks.txt"
+    summary_csv = output_dir / "summary.csv"
+    summary_json = output_dir / "summary.json"
 
     task_name_cfg = cfg.EVALUATION.task_name
     if task_name_cfg is None or str(task_name_cfg).strip() == "":
-        if is_flying_hand:
-            tasks = _load_all_flying_hand_tasks(robotwin_root)
-        else:
-            tasks = _load_all_tasks(robotwin_root)
+        tasks = _load_all_tasks(robotwin_root, cfg)
     else:
         tasks = [str(task_name_cfg)]
 
     extra_overrides = _collect_worker_overrides()
+    config_name = HydraConfig.get().job.config_name
 
-    task_rates: dict[str, dict[str, float | None]] = {
-        task: ({"flying_hand": None} if is_flying_hand else {"clean": None, "random": None}) for task in tasks
-    }
+    task_rates: dict[str, float | None] = {task: None for task in tasks}
     failed_records: list[dict[str, Any]] = []
     pending_tasks = deque(tasks)
     running_states: list[RunningState] = []
-
-    phase_to_task_config = {"flying_hand": str(cfg.EVALUATION.task_config)} if is_flying_hand else {
-        "clean": "demo_clean",
-        "random": "demo_randomized",
-    }
 
     def log(msg: str) -> None:
         line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
@@ -213,26 +165,23 @@ def main(cfg: DictConfig):
             f.write(line + "\n")
             f.flush()
 
-    def build_cmd(*, task_name: str, gpu_id: int, phase: str) -> list[str]:
-        task_config = phase_to_task_config[phase]
-        cmd = [
+    def build_cmd(*, task_name: str, gpu_id: int) -> list[str]:
+        return [
             sys.executable,
             str(SINGLE_ENTRY),
+            "--config-name",
+            str(config_name),
             f"ckpt={str(ckpt_path)}",
             f"gpu_id={gpu_id}",
             f"EVALUATION.task_name={task_name}",
-            f"EVALUATION.task_config={task_config}",
+            f"EVALUATION.task_config={str(cfg.EVALUATION.task_config)}",
             f"EVALUATION.output_dir={str(output_dir)}",
+            *extra_overrides,
         ]
-        cmd.extend(extra_overrides)
-        return cmd
 
-    def launch_phase(task_name: str, gpu_id: int, phase: str) -> RunningState:
-        cmd = build_cmd(task_name=task_name, gpu_id=gpu_id, phase=phase)
-        log(
-            f"launch task={task_name} phase={phase} gpu={gpu_id} "
-            f"cmd={' '.join(cmd)}"
-        )
+    def launch_task(task_name: str, gpu_id: int) -> RunningState:
+        cmd = build_cmd(task_name=task_name, gpu_id=gpu_id)
+        log(f"launch task={task_name} gpu={gpu_id} cmd={' '.join(cmd)}")
         process = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_ROOT),
@@ -241,7 +190,6 @@ def main(cfg: DictConfig):
         return RunningState(
             task_name=task_name,
             gpu_id=gpu_id,
-            phase=phase,
             process=process,
         )
 
@@ -249,7 +197,7 @@ def main(cfg: DictConfig):
         for state in list(running_states):
             if state.process.poll() is not None:
                 continue
-            log(f"terminating task={state.task_name} phase={state.phase} gpu={state.gpu_id}")
+            log(f"terminating task={state.task_name} gpu={state.gpu_id}")
             state.process.terminate()
         deadline = time.time() + TERMINATE_TIMEOUT_SEC
         for state in list(running_states):
@@ -259,7 +207,7 @@ def main(cfg: DictConfig):
             try:
                 state.process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
-                log(f"killing task={state.task_name} phase={state.phase} gpu={state.gpu_id}")
+                log(f"killing task={state.task_name} gpu={state.gpu_id}")
                 state.process.kill()
                 state.process.wait()
 
@@ -274,38 +222,28 @@ def main(cfg: DictConfig):
 
     def try_launch_pending(gpu_id: int) -> None:
         while len(pending_tasks) > 0 and gpu_running_count(gpu_id) < max_tasks_per_gpu:
-            task_name = pending_tasks.popleft()
-            running_states.append(launch_phase(task_name=task_name, gpu_id=gpu_id, phase="flying_hand" if is_flying_hand else "clean"))
+            running_states.append(launch_task(task_name=pending_tasks.popleft(), gpu_id=gpu_id))
 
     def write_outputs() -> None:
-        clean_mean = _mean_or_none([task_rates[t]["flying_hand" if is_flying_hand else "clean"] for t in tasks])
-        random_mean = None if is_flying_hand else _mean_or_none([task_rates[t]["random"] for t in tasks])
+        mean = _mean_or_none([task_rates[t] for t in tasks])
 
         with summary_csv.open("w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["task_name", "clean_success_rate", "random_success_rate"])
+            writer.writerow(["task_name", "success_rate"])
             for task in tasks:
-                writer.writerow(
-                    [
-                        task,
-                        task_rates[task]["flying_hand" if is_flying_hand else "clean"],
-                        None if is_flying_hand else task_rates[task]["random"],
-                    ]
-                )
-            writer.writerow(["__overall__", clean_mean, random_mean])
+                writer.writerow([task, task_rates[task]])
+            writer.writerow(["__overall__", mean])
 
         payload = {
             "per_task": [
                 {
                     "task_name": task,
-                        "clean_success_rate": _to_jsonable(task_rates[task]["flying_hand" if is_flying_hand else "clean"]),
-                        "random_success_rate": None if is_flying_hand else _to_jsonable(task_rates[task]["random"]),
+                    "success_rate": _to_jsonable(task_rates[task]),
                 }
                 for task in tasks
             ],
             "overall": {
-                "clean_mean_success_rate": _to_jsonable(clean_mean),
-                "random_mean_success_rate": _to_jsonable(random_mean),
+                "mean_success_rate": _to_jsonable(mean),
             },
         }
         summary_json.write_text(
@@ -316,13 +254,13 @@ def main(cfg: DictConfig):
         with failed_tasks_file.open("w", encoding="utf-8") as f:
             for rec in failed_records:
                 f.write(
-                    f"{rec['task_name']},{rec['phase']},gpu={rec['gpu_id']},"
+                    f"{rec['task_name']},gpu={rec['gpu_id']},"
                     f"return_code={rec['return_code']},reason={rec['reason']}\n"
                 )
 
     log(
         f"manager start tasks={len(tasks)} gpu_ids={gpu_ids} "
-        f"max_tasks_per_gpu={max_tasks_per_gpu} output_dir={run_output_dir}"
+        f"max_tasks_per_gpu={max_tasks_per_gpu} output_dir={output_dir}"
     )
 
     # Launch initial tasks for each GPU up to capacity.
@@ -345,13 +283,11 @@ def main(cfg: DictConfig):
             if return_code != 0:
                 has_failure = True
                 failure_message = (
-                    f"worker failed: task={state.task_name}, phase={state.phase}, "
-                    f"gpu={gpu_id}, return_code={return_code}"
+                    f"worker failed: task={state.task_name}, gpu={gpu_id}, return_code={return_code}"
                 )
                 failed_records.append(
                     {
                         "task_name": state.task_name,
-                        "phase": state.phase,
                         "gpu_id": gpu_id,
                         "return_code": return_code,
                         "reason": "process_failed",
@@ -362,19 +298,17 @@ def main(cfg: DictConfig):
                 running_states.clear()
                 break
 
-            result_file = run_output_dir / state.task_name / _phase_result_filename(state.phase)
+            result_file = output_dir / state.task_name / "_result.txt"
             try:
                 success_rate = _parse_success_rate(result_file)
             except Exception as exc:
                 has_failure = True
                 failure_message = (
-                    f"result parse failed: task={state.task_name}, phase={state.phase}, "
-                    f"gpu={gpu_id}, error={repr(exc)}"
+                    f"result parse failed: task={state.task_name}, gpu={gpu_id}, error={repr(exc)}"
                 )
                 failed_records.append(
                     {
                         "task_name": state.task_name,
-                        "phase": state.phase,
                         "gpu_id": gpu_id,
                         "return_code": return_code,
                         "reason": "result_parse_failed",
@@ -385,20 +319,8 @@ def main(cfg: DictConfig):
                 running_states.clear()
                 break
 
-            task_rates[state.task_name][state.phase] = success_rate
-            log(
-                f"done task={state.task_name} phase={state.phase} gpu={gpu_id} "
-                f"success_rate={success_rate:.4f}"
-            )
-
-            if state.phase == "clean" and not is_flying_hand:
-                running_states.append(launch_phase(
-                    task_name=state.task_name,
-                    gpu_id=gpu_id,
-                    phase="random",
-                ))
-                continue
-
+            task_rates[state.task_name] = success_rate
+            log(f"done task={state.task_name} gpu={gpu_id} success_rate={success_rate:.4f}")
             try_launch_pending(gpu_id)
 
         if has_failure:
@@ -412,7 +334,6 @@ def main(cfg: DictConfig):
             failed_records.append(
                 {
                     "task_name": task_name,
-                    "phase": "not_started",
                     "gpu_id": -1,
                     "return_code": -1,
                     "reason": "aborted_not_started",
