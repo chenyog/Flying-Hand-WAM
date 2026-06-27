@@ -18,7 +18,7 @@ domain_randomization:
   random_light: false
   crazy_random_light_rate: 0
 camera:
-  head_camera_type: Large_D435
+  head_camera_type: ZED2
   wrist_camera_type: Large_HBVCAM_F2209HD
   collect_head_camera: true
   collect_wrist_camera: true

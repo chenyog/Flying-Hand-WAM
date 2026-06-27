@@ -18,6 +18,16 @@ Large_D435:
   w: 640
   h: 480
 
+ZED2:
+  fovy: 70
+  w: 672
+  h: 376
+
+Large_ZED2:
+  fovy: 70
+  w: 1280
+  h: 720
+
 HBVCAM_F2209HD:
   fovy: 48
   w: 320
