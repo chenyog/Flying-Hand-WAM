@@ -7,9 +7,8 @@ from .stack_blocks_two import stack_blocks_two
 
 
 class stack_blocks_two_size(stack_blocks_two):
-    grasp_x_offset = -0.065
     grasp_z_offset = 0.055
-    stack_release_z_offset = 0.02
+    stack_release_z_offset = 0.03
     block_half_sizes = np.array([
         [0.020, 0.020, 0.030],
         [0.032, 0.032, 0.042],

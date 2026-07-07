@@ -12,9 +12,9 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
     block_mass = 0.05
     block_y_offsets = [-0.28, 0.0, 0.28]
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.08
+    grasp_x_offset = -0.10
     pull_out_x_offset = -0.54
-    grasp_y_offset = 0.002
+    grasp_y_offset = 0.02
     grasp_z_offset = 0.050
     pull_out_z_offset = 0.26
 

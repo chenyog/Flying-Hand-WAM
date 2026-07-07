@@ -7,9 +7,9 @@ from .blocks_ranking_rgb import blocks_ranking_rgb
 
 
 class blocks_ranking_size(blocks_ranking_rgb):
-    grasp_y_offset = 0.0002
+    grasp_y_offset = 0.02
     pre_grasp_x_offset = -0.58
-    grasp_x_offset = -0.08
+    grasp_x_offset = -0.10
     pull_out_x_offset = -0.58
     grasp_z_offset = 0.045
     pull_out_z_offset = 0.34
@@ -47,22 +47,6 @@ class blocks_ranking_size(blocks_ranking_rgb):
         half = self.block_half_sizes[block]
         return np.array([self._block_x(half), self.target_ys[pos], self.board_slots[self.source_slot_id][1] + half[2]])
 
-    def _staging_y(self):
-        center_y = float(np.mean(self.target_ys))
-        slot_y, _ = self.board_slots[self.source_slot_id]
-        half_y = float(self.block_half_sizes[:, 1].max() + self.shelf_object_gap)
-        low = slot_y - self.shelf_width / 2 + half_y
-        high = slot_y + self.shelf_width / 2 - half_y
-        candidates = [center_y + 0.30, center_y - 0.30, center_y + 0.27, center_y - 0.27]
-        valid = [y for y in candidates if low <= y <= high]
-        if not valid:
-            valid = [float(np.clip(center_y + 0.27, low, high)), float(np.clip(center_y - 0.27, low, high))]
-        return max(valid, key=lambda y: min(abs(y - target_y) for target_y in self.target_ys))
-
-    def _staging_center(self, block):
-        half = self.block_half_sizes[block]
-        return np.array([self._block_x(half), self.staging_y, self.board_slots[self.source_slot_id][1] + half[2]])
-
     def _create_block(self, block, slot_id, y):
         half = self.block_half_sizes[block]
         box = create_box(
@@ -80,45 +64,43 @@ class blocks_ranking_size(blocks_ranking_rgb):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
-        self.staging_y = self._staging_y()
         positions = [None] * 3
         for block, pos in enumerate(self.order):
             positions[int(pos)] = int(block)
+        start = tuple((int(block),) for block in positions)
+        goal = ((0,), (1,), (2,))
+        queue = [start]
+        seen = {start: []}
+        for state in queue:
+            if state == goal:
+                break
+            for src, stack in enumerate(state):
+                if not stack:
+                    continue
+                for dst in range(3):
+                    if src == dst or len(state[dst]) >= 2:
+                        continue
+                    nxt = [list(s) for s in state]
+                    block = nxt[src].pop()
+                    nxt[dst].append(block)
+                    nxt = tuple(tuple(s) for s in nxt)
+                    if nxt not in seen:
+                        seen[nxt] = seen[state] + [(src, dst, block)]
+                        queue.append(nxt)
+
+        stacks = [list(s) for s in start]
         pose = self.flying_hand_initial_pose
         retreat = None
-        staging_block = None
-        for pos in range(3):
-            if positions[pos] == pos:
-                continue
-            block = positions[pos]
-            pose, retreat = self._move_block(pose, self.blocks[block], self._staging_center(block), save_freq, retreat)
-            positions[pos] = None
-            staging_block = block
-            empty_pos = pos
-            while True:
-                target_block = empty_pos
-                if staging_block == target_block:
-                    pose, retreat = self._move_block(
-                        pose,
-                        self.blocks[staging_block],
-                        self._target_center(staging_block, empty_pos),
-                        save_freq,
-                        retreat,
-                    )
-                    positions[empty_pos] = staging_block
-                    staging_block = None
-                    break
-                src = positions.index(target_block)
-                pose, retreat = self._move_block(
-                    pose,
-                    self.blocks[target_block],
-                    self._target_center(target_block, empty_pos),
-                    save_freq,
-                    retreat,
-                )
-                positions[empty_pos] = target_block
-                positions[src] = None
-                empty_pos = src
+        for i, (src, dst, block) in enumerate(seen[goal]):
+            target = (
+                self.blocks[stacks[dst][-1]].get_pose().p
+                + np.array([0.0, 0.0, self.block_half_sizes[block][2] + self.block_half_sizes[stacks[dst][-1]][2]])
+                if stacks[dst]
+                else self._target_center(block, dst)
+            )
+            pose, retreat = self._move_block(pose, self.blocks[block], target, save_freq, retreat, i == len(seen[goal]) - 1)
+            stacks[src].pop()
+            stacks[dst].append(block)
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {"{A}": self.block_names[0], "{B}": self.block_names[1], "{C}": self.block_names[2]}
         return self.info

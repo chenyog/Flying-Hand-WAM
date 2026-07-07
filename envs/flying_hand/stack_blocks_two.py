@@ -12,9 +12,9 @@ class stack_blocks_two(FlyingHandBaseTask):
     block_mass = 0.05
     source_y_offsets = [-0.18, 0.18]
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.065
+    grasp_x_offset = -0.10
     pull_out_x_offset = -0.50
-    grasp_y_offset = 0.015
+    grasp_y_offset = 0.02
     grasp_z_offset = 0.050
     pull_out_z_offset = 0.23
     stack_release_z_offset = 0.0
@@ -73,6 +73,8 @@ class stack_blocks_two(FlyingHandBaseTask):
         ])
 
     def _move_block(self, block, target_center, save_freq):
+        self.is_grasping = False
+        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"])
         pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.grasp_z_offset)
         grasp = self._get_block_grasp_pose(block, self.grasp_x_offset, self.grasp_z_offset)
         pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.grasp_z_offset)
