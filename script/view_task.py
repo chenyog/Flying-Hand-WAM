@@ -78,6 +78,30 @@ def keep_viewer_open(task):
         time.sleep(1 / 60)
 
 
+def enable_camera_windows(task, camera_names=None):
+    try:
+        import cv2
+    except ImportError as exc:
+        raise SystemExit("OpenCV is required for --show-cameras. Install opencv-python or disable the flag.") from exc
+
+    camera_names = set(camera_names or [])
+    update_render = task._update_render
+
+    def update_render_with_cameras():
+        update_render()
+        task.cameras.update_picture()
+        rgb = task.cameras.get_rgb()
+        for name, data in rgb.items():
+            if camera_names and name not in camera_names:
+                continue
+            image = data.get("rgb", data.get("rgba"))[:, :, :3]
+            cv2.imshow(f"{name}", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        cv2.waitKey(1)
+
+    task._update_render = update_render_with_cameras
+    return cv2
+
+
 def main():
     parser = ArgumentParser()
     parser.add_argument("task_name", type=str)
@@ -86,6 +110,8 @@ def main():
     parser.add_argument("--episode", type=int, default=0)
     parser.add_argument("--render-freq", type=int, default=1)
     parser.add_argument("--no-play", action="store_true")
+    parser.add_argument("--show-cameras", action="store_true")
+    parser.add_argument("--camera-names", nargs="*", default=None)
     args_cli = parser.parse_args()
 
     task = class_decorator(args_cli.task_name)
@@ -93,14 +119,19 @@ def main():
     args["seed"] = args_cli.seed
     args["now_ep_num"] = args_cli.episode
 
+    cv2 = None
     try:
         task.setup_demo(**args)
+        if args_cli.show_cameras:
+            cv2 = enable_camera_windows(task, args_cli.camera_names)
         if args_cli.no_play:
             keep_viewer_open(task)
         else:
             task.play_once()
             keep_viewer_open(task)
     finally:
+        if cv2 is not None:
+            cv2.destroyAllWindows()
         task.close_env()
         if getattr(task, "render_freq", 0) and hasattr(task, "viewer") and not task.viewer.closed:
             task.viewer.close()

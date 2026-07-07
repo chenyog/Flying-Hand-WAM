@@ -30,10 +30,10 @@ class FlyingHandBaseTask(gym.Env):
     board_center_z = 1.275
     board_side_strip_width = 0.03
     wall_distance = 3.0
-    wall_width = 10.0
-    wall_height = 5.0
+    wall_width = 24.0
+    wall_height = 10.0
     wall_thickness = 0.02
-    ground_size = 10.0
+    ground_size = 24.0
     ground_thickness = 0.02
     fixture_color = (0.94, 0.88, 0.70)
     shelf_length = 0.30
