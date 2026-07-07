@@ -9,7 +9,7 @@ enable_dynamics: true
 embodiment: [flying-hand]
 language_num: 100
 domain_randomization:
-  random_background: false
+  random_background: true
   cluttered_board: true
   clean_background_rate: 0.02
   random_head_camera_dis: 0.03

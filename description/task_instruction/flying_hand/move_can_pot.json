@@ -1,5 +1,5 @@
 {
-  "full_description": "Use the flying hand to grab the can, move it beside the pot on the board with a clear gap, release it, and retreat to the pre-place pose.",
+  "full_description": "Use the flying hand to center-grab the can, move it beside the pot on the board with a clear gap, release it, and retreat to the pre-place pose.",
   "schema": "{A} notifies the pot, {B} notifies the can.",
   "preference": "num of words should not exceed 20.",
   "seen": [

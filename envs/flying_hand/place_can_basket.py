@@ -6,7 +6,7 @@ from . import planner
 
 class place_can_basket(FlyingHandBaseTask):
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.09
+    grasp_x_offset = -0.08
     pull_out_x_offset = -0.52
     pre_grasp_z_offset = 0.10
     grasp_z_offset = 0.02

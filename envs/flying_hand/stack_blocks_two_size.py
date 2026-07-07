@@ -7,11 +7,14 @@ from .stack_blocks_two import stack_blocks_two
 
 
 class stack_blocks_two_size(stack_blocks_two):
+    grasp_x_offset = -0.065
+    grasp_z_offset = 0.055
+    stack_release_z_offset = 0.02
     block_half_sizes = np.array([
-        [0.024, 0.024, 0.024],
-        [0.050, 0.050, 0.050],
+        [0.020, 0.020, 0.030],
+        [0.032, 0.032, 0.042],
     ])
-    block_masses = [0.05, 0.12]
+    block_masses = [0.03, 0.07]
     block_names = ["small block", "large block"]
 
     def load_actors(self):
@@ -38,8 +41,8 @@ class stack_blocks_two_size(stack_blocks_two):
             )
         self.small_block = self._create_block(0, self.small_slot_id, small_y)
         self.large_block = self._create_block(1, self.large_slot_id, large_y)
-        self.add_prohibit_area(self.small_block, padding=0.06)
-        self.add_prohibit_area(self.large_block, padding=0.06)
+        self.add_prohibit_area(self.small_block, padding=0.12)
+        self.add_prohibit_area(self.large_block, padding=0.12)
 
     def _block_x(self, half):
         return self._board_front_x() - self.shelf_length + half[0]

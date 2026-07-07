@@ -1,5 +1,5 @@
 {
-  "full_description": "Use the flying hand to grab the can and place it in the basket on the board.",
+  "full_description": "Use the flying hand to center-grab the can and place it in the basket on the board.",
   "schema": "{A} notifies the can. {B} notifies the basket.",
   "preference": "num of words should not exceed 15.",
   "seen": [

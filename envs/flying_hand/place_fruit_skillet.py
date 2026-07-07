@@ -6,14 +6,17 @@ from . import planner
 
 class place_fruit_skillet(FlyingHandBaseTask):
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.09
+    grasp_x_offset = -0.12
     pull_out_x_offset = -0.50
     pre_grasp_z_offset = 0.08
-    grasp_z_offset = 0.01
+    grasp_z_offset = 0.04
     pull_out_z_offset = 0.22
     place_pre_z_offset = 0.30
     place_z_offset = 0.13
+    initial_to_pre_grasp_seconds = 3.0
+    pre_grasp_to_grasp_seconds = 2.0
     grasp_to_place_seconds = 2.4
+    close_qpos_scale = 0.65
 
     def load_actors(self):
         self._reset_board_slots()
@@ -45,7 +48,7 @@ class place_fruit_skillet(FlyingHandBaseTask):
             times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
             save_freq=save_freq,
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
+        self.set_flying_hand_gripper((np.array(self.flying_hand_config["gripper"]["close_qpos"]) * self.close_qpos_scale).tolist(), is_grasp=True)
         planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         planner.move_minco(
             self,

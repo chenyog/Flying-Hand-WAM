@@ -38,13 +38,13 @@ place_shoe: 500
 press_stapler: 400
 put_bottles_dustbin: 1700
 put_object_cabinet: 700
-rotate_qrcode: 400
 scan_object: 500
 shake_bottle: 700
 shake_bottle_horizontally: 700
 stack_blocks_three: 1200
 stack_blocks_two: 800
 stack_blocks_two_size: 800
+thread_tape_rod: 700
 stack_bowls_three: 1200
 stack_bowls_two: 900
 stamp_seal: 400

@@ -1,9 +1,11 @@
+# 模型设置
+修改了urdf参数后，同步修改训练中模型相关参数
 # 场景设置 
 randomization的object的是可以绕z轴旋转调整的，只要能放在shelf上就可以，位置也随机，避免不同object重叠，同时保证涉及到task的shelf对应的空间不被占用就可以
 
 当task的具体脚本发生变化后，同步修改task description的full description
 
-当修改了_base_task后，检查所有其他task是否发生冲突
+当修改了_base_task后，同步修改其他所有具体task，适配_base_task的需求
 
 task、randomized objects 的z轴位置和xy位置都需要考虑到./description/objects_description里面的z_offset和radius等约束
 

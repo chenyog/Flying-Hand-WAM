@@ -11,13 +11,14 @@ from . import planner
 
 class move_can_pot(FlyingHandBaseTask):
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.09
+    grasp_x_offset = -0.11
     pull_out_x_offset = -0.52
     pre_grasp_z_offset = 0.10
+    grasp_y_offset = 0.015
     grasp_z_offset = 0.02
-    pull_out_z_offset = 0.18
+    pull_out_z_offset = 0.16
     grasp_to_place_seconds = 2.1
-    can_pot_gap = 0.06
+    can_pot_gap = 0.12
     can_qpos = [0.707225, 0.706849, -0.0100455, -0.00982061]
     pot_qpos = [0, 0, 0, 1]
 
@@ -83,16 +84,21 @@ class move_can_pot(FlyingHandBaseTask):
         self.add_prohibit_area(self.can, padding=0.08)
         self.shelf_xy_areas[self.pot_slot_id].append((self.target_center[0], self.target_center[1], max(can_half) + 0.08))
 
-    def _pose_from_center(self, center, x_offset, z_offset=0.0):
-        return self._get_flying_hand_pose_from_u_center([center[0] + x_offset, center[1], center[2] + z_offset])
+    def _pose_from_center(self, center, x_offset, z_offset=0.0, y_offset=0.0):
+        return self._get_flying_hand_pose_from_u_center([center[0] + x_offset, center[1] + y_offset, center[2] + z_offset])
+
+    def _get_can_grasp_pose(self, x_offset, z_offset=0.0):
+        bounds = self._get_actor_world_bounds(self.can)
+        center = (bounds[0] + bounds[1]) / 2
+        return self._pose_from_center(center, x_offset, z_offset, self.grasp_y_offset)
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
-        can_pre = self._get_flying_hand_pose(self.can, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
-        can_grasp = self._get_flying_hand_pose(self.can, self.grasp_x_offset, self.grasp_z_offset)
-        can_pull = self._get_flying_hand_pose(self.can, self.pull_out_x_offset, self.pull_out_z_offset)
-        place_pre = self._pose_from_center(self.target_center, self.pull_out_x_offset, self.pull_out_z_offset)
-        place = self._pose_from_center(self.target_center, self.grasp_x_offset, self.grasp_z_offset)
+        can_pre = self._get_can_grasp_pose(self.pre_grasp_x_offset, self.pre_grasp_z_offset)
+        can_grasp = self._get_can_grasp_pose(self.grasp_x_offset, self.grasp_z_offset)
+        can_pull = self._get_can_grasp_pose(self.pull_out_x_offset, self.pull_out_z_offset)
+        place_pre = self._pose_from_center(self.target_center, self.pull_out_x_offset, self.pull_out_z_offset, self.grasp_y_offset)
+        place = self._pose_from_center(self.target_center, self.grasp_x_offset, self.grasp_z_offset, self.grasp_y_offset)
 
         planner.move_minco(
             self,

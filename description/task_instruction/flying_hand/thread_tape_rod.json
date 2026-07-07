@@ -1,0 +1,24 @@
+{
+  "full_description": "Use the flying hand to grab the tape roll and thread it onto the rod.",
+  "schema": "{A} notifies the tape roll. {B} notifies the rod.",
+  "preference": "num of words should not exceed 15.",
+  "seen": [
+    "Grab {A} and thread it onto {B}.",
+    "Use the hand to put {A} on {B}.",
+    "Pick up {A} and place it over {B}.",
+    "Move {A} onto the rod {B}.",
+    "Thread {A} through {B}.",
+    "Put the tape roll {A} on {B}.",
+    "Use flying hand to thread {A} onto {B}.",
+    "Grab {A} then slide it onto {B}.",
+    "Place {A} around {B}.",
+    "Lift {A} and set it onto {B}."
+  ],
+  "unseen": [
+    "Thread the tape {A} onto the rod {B}.",
+    "Pick up {A} and put it on {B}.",
+    "Use the flying hand to place {A} over {B}.",
+    "Move {A} so it sits on {B}.",
+    "Grab {A} and insert it onto {B}."
+  ]
+}

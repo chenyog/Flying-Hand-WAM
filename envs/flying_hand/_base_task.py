@@ -28,11 +28,20 @@ class FlyingHandBaseTask(gym.Env):
     board_center_x = 1.0
     board_center_y = 0.0
     board_center_z = 1.275
+    board_side_strip_width = 0.03
+    wall_distance = 3.0
+    wall_width = 10.0
+    wall_height = 5.0
+    wall_thickness = 0.02
+    ground_size = 10.0
+    ground_thickness = 0.02
+    fixture_color = (0.94, 0.88, 0.70)
     shelf_length = 0.30
-    shelf_width = 0.50
+    shelf_width = board_width
     shelf_thickness = 0.02
     shelf_count = 4
-    shelf_margin = 0.225
+    shelf_ground_height = 0.12
+    shelf_low_spacing = 0.40
     shelf_object_gap = 0.02
     clutter_object_count_range = (4, 7)
     flying_hand_board_distance = 2.45
@@ -41,11 +50,11 @@ class FlyingHandBaseTask(gym.Env):
     vertical_object_qpos = [0.70710678, 0.70710678, 0.0, 0.0]
     initial_to_pre_grasp_seconds = 2.0
     pre_grasp_to_grasp_seconds = 1.6
-    grasp_hold_seconds = 0.7
+    grasp_hold_seconds = 1.0
     grasp_to_pull_out_seconds = 1.3
     pull_out_to_place_seconds = 2.1
     release_to_retreat_seconds = pre_grasp_to_grasp_seconds
-    release_hold_seconds = 0.5
+    release_hold_seconds = 1.0
     flying_hand_black_color = [0.101960784313725, 0.101960784313725, 0.101960784313725, 1.0]
     flying_hand_silver_color = [0.8, 0.8, 0.8, 1.0]
     flying_hand_black_link_names = {
@@ -121,6 +130,16 @@ class FlyingHandBaseTask(gym.Env):
         self.board_z_bias = np.random.uniform(-self.random_board_height, self.random_board_height) + table_height_bias
         self.table_z_bias = self.board_z_bias
         self.clutter_object_count = int(np.random.randint(self.clutter_object_count_range[0], self.clutter_object_count_range[1] + 1))
+        self.ground_texture = None
+        self.wall_texture = None
+        if self.random_background:
+            texture_type = "seen" if not self.eval_mode else "unseen"
+            with open(Path(__file__).with_name("textures.yml"), "r", encoding="utf-8") as f:
+                texture_config = yaml.safe_load(f)
+            if np.random.rand() > self.clean_background_rate:
+                self.ground_texture = f"{texture_type}/{np.random.choice(texture_config['ground'][texture_type])}"
+            if np.random.rand() > self.clean_background_rate:
+                self.wall_texture = f"{texture_type}/{np.random.choice(texture_config['wall'][texture_type])}"
 
         self.record_cluttered_objects = []
         self.now_obs = {}
@@ -141,7 +160,10 @@ class FlyingHandBaseTask(gym.Env):
 
         self.info = {
             "cluttered_board_info": self.record_cluttered_objects,
-            "texture_info": {"board_texture": self.board_texture},
+            "texture_info": {
+                "ground_texture": self.ground_texture,
+                "wall_texture": self.wall_texture,
+            },
             "info": {},
         }
 
@@ -160,12 +182,23 @@ class FlyingHandBaseTask(gym.Env):
         self.sim_timestep = kwargs.get("timestep", 1 / 500)
         self.scene.set_timestep(self.sim_timestep)
         self.ground_height = kwargs.get("ground_height", 0)
-        self.scene.add_ground(self.ground_height)
         self.scene.default_physical_material = self.scene.create_physical_material(
             kwargs.get("static_friction", 0.5),
             kwargs.get("dynamic_friction", 0.5),
             kwargs.get("restitution", 0),
         )
+        if self.ground_texture is None:
+            self.scene.add_ground(self.ground_height)
+        else:
+            self.ground = create_box(
+                self.scene,
+                sapien.Pose([0, 0, self.ground_height - self.ground_thickness / 2]),
+                half_size=[self.ground_size / 2, self.ground_size / 2, self.ground_thickness / 2],
+                color=(1, 1, 1),
+                name="ground",
+                texture_id=self.ground_texture,
+                is_static=True,
+            )
         self.scene.set_ambient_light(kwargs.get("ambient_light", [0.68, 0.68, 0.68]))
         point_lights = kwargs.get(
             "point_lights",
@@ -184,14 +217,14 @@ class FlyingHandBaseTask(gym.Env):
             self.viewer = Viewer(self.renderer)
             self.viewer.set_scene(self.scene)
             self.viewer.set_camera_xyz(
-                x=kwargs.get("camera_xyz_x", 0.85),
-                y=kwargs.get("camera_xyz_y", -0.85),
-                z=kwargs.get("camera_xyz_z", 1.65),
+                x=kwargs.get("camera_xyz_x", -1.15),
+                y=kwargs.get("camera_xyz_y", 0.0),
+                z=kwargs.get("camera_xyz_z", 1.45),
             )
             self.viewer.set_camera_rpy(
                 r=kwargs.get("camera_rpy_r", 0),
-                p=kwargs.get("camera_rpy_p", -0.65),
-                y=kwargs.get("camera_rpy_y", 2.35),
+                p=kwargs.get("camera_rpy_p", -0.35),
+                y=kwargs.get("camera_rpy_y", 0.0),
             )
 
     def load_camera(self, **kwags):
@@ -224,13 +257,20 @@ class FlyingHandBaseTask(gym.Env):
 
     def create_table_and_wall(self, table_xy_bias=[0, 0], table_height=0.74):
         self.table_xy_bias = table_xy_bias
-        self.board_texture = None
-        self.wall = None
         self.table = None
-        if self.random_background and np.random.rand() > self.clean_background_rate:
-            texture_type = "seen" if not self.eval_mode else "unseen"
-            path = f"./assets/background_texture/{texture_type}"
-            self.board_texture = f"{texture_type}/{np.random.randint(0, len([name for name in os.listdir(path) if os.path.isfile(os.path.join(path, name))]))}"
+        self.wall = create_box(
+            self.scene,
+            sapien.Pose([
+                self.board_center_x + self.board_thickness / 2 + self.wall_distance + self.wall_thickness / 2,
+                self.board_center_y,
+                self.ground_height + self.wall_height / 2,
+            ]),
+            half_size=[self.wall_thickness / 2, self.wall_width / 2, self.wall_height / 2],
+            color=(1, 1, 1),
+            name="wall",
+            texture_id=self.wall_texture,
+            is_static=True,
+        )
         self._create_vertical_board()
 
     def _get_available_model_ids(self, modelname):
@@ -361,17 +401,21 @@ class FlyingHandBaseTask(gym.Env):
 
     def _sample_board_slots(self):
         slots = []
-        for z in np.linspace(
-            self.board_center_z + self.board_height / 2 + self.board_z_bias - self.shelf_margin,
-            self.board_center_z - self.board_height / 2 + self.board_z_bias + self.shelf_margin,
-            self.shelf_count,
-        ):
-            y = np.random.uniform(-self.board_width / 2 + self.shelf_width / 2, self.board_width / 2 - self.shelf_width / 2)
+        for z in np.r_[np.linspace(
+            self.board_center_z + self.board_height / 2 + self.board_z_bias,
+            self.ground_height + self.shelf_ground_height + self.shelf_low_spacing,
+            self.shelf_count - 1,
+        ), self.ground_height + self.shelf_ground_height]:
+            y = np.random.uniform(
+                self.board_center_y - self.board_width / 2 + self.shelf_width / 2,
+                self.board_center_y + self.board_width / 2 - self.shelf_width / 2,
+            )
             slots.append((y, z))
         return slots
 
     def _reset_board_slots(self):
-        self.board_slots = self._sample_board_slots()
+        shelf_slots = self._sample_board_slots()
+        self.board_slots = shelf_slots[:-1]
         self.shelf_xy_areas = {idx: [] for idx in range(len(self.board_slots))}
         self.shelves = [
             create_box(
@@ -382,11 +426,11 @@ class FlyingHandBaseTask(gym.Env):
                     z - self.shelf_thickness / 2,
                 ]),
                 half_size=[self.shelf_length / 2, self.shelf_width / 2, self.shelf_thickness / 2],
-                color=(1, 1, 1),
+                color=self.fixture_color,
                 name=f"shelf_{idx + 1}",
                 is_static=True,
             )
-            for idx, (y, z) in enumerate(self.board_slots)
+            for idx, (y, z) in enumerate(shelf_slots)
         ]
 
     def _board_front_x(self):
@@ -407,15 +451,22 @@ class FlyingHandBaseTask(gym.Env):
         return max(1, int(round(seconds / self.sim_timestep)))
 
     def _create_vertical_board(self):
-        self.vertical_board = create_box(
-            self.scene,
-            sapien.Pose(p=self._board_center().tolist()),
-            half_size=[self.board_thickness / 2, self.board_width / 2, self.board_height / 2],
-            color=(1, 1, 1),
-            name="vertical_board",
-            texture_id=self.board_texture,
-            is_static=True,
-        )
+        top = self.board_center_z + self.board_height / 2 + self.board_z_bias
+        self.vertical_board = [
+            create_box(
+                self.scene,
+                sapien.Pose(p=[
+                    self.board_center_x,
+                    self.board_center_y + side * (self.board_width - self.board_side_strip_width) / 2,
+                    (top + self.ground_height) / 2,
+                ]),
+                half_size=[self.board_thickness / 2, self.board_side_strip_width / 2, (top - self.ground_height) / 2],
+                color=self.fixture_color,
+                name=f"vertical_board_{'right' if side > 0 else 'left'}",
+                is_static=True,
+            )
+            for side in (-1, 1)
+        ]
         self.board_x = self.board_center_x
 
     def _create_board_actor(self, modelname, model_id, slot_id, mass=None, is_static=False, qpos=None, x=None, y=None, padding=None, random_x=False, reserve=False):
@@ -458,11 +509,25 @@ class FlyingHandBaseTask(gym.Env):
         self._set_flying_hand_materials()
         for link in self.flying_hand.get_links():
             link.set_mass(self.flying_hand_config["link_mass"])
-        self.flying_hand_joints = {joint.get_name(): joint for joint in self.flying_hand.get_active_joints()}
+        joints = self.flying_hand.get_active_joints()
+        names = [joint.get_name() for joint in joints]
+        self.flying_hand_joints = dict(zip(names, joints))
         gripper_config = self.flying_hand_config["gripper"]
+        self.flying_hand_gripper_joint_indices = [names.index(name) for name in gripper_config["joint_names"]]
         self.flying_hand_gripper_joints = [self.flying_hand_joints[name] for name in gripper_config["joint_names"]]
-        for joint in self.flying_hand_gripper_joints:
-            joint.set_drive_property(gripper_config["stiffness"], gripper_config["damping"])
+        self.flying_hand_gripper_prismatic_indices = [idx for idx, name in enumerate(gripper_config["joint_names"]) if "prismatic" in name]
+        self.flying_hand_gripper_revolute_indices = [idx for idx, name in enumerate(gripper_config["joint_names"]) if "revolute" in name]
+        self.flying_hand_gripper_prismatic_stage_ratio = float(gripper_config["close_prismatic_stage_ratio"])
+        self.flying_hand_gripper_prismatic_hold_ratio = float(gripper_config["close_prismatic_hold_ratio"])
+        self.flying_hand_gripper_prismatic_qpos_ratio = float(gripper_config["close_prismatic_qpos_ratio"])
+        self._configure_flying_hand_gripper_control(gripper_config)
+        if gripper_config.get("disable_self_collision", True):
+            self._disable_flying_hand_self_collision()
+        self.flying_hand_gripper_qpos = np.array(gripper_config["open_qpos"], dtype=float)
+        self.flying_hand_gripper_start_qpos = self.flying_hand_gripper_qpos.copy()
+        self.flying_hand_gripper_step = 0
+        self.flying_hand_gripper_steps = 0
+        self._set_flying_hand_gripper_qpos(self.flying_hand_gripper_qpos)
         self.set_flying_hand_gripper(gripper_config["open_qpos"])
         self.flying_hand_initial_pose = self._get_flying_hand_initial_pose()
         planner.set_pose(self, self.flying_hand_initial_pose)
@@ -489,12 +554,86 @@ class FlyingHandBaseTask(gym.Env):
                     if shape.material is not None:
                         shape.material.set_base_color(color)
 
+    def _disable_flying_hand_self_collision(self):
+        for link in self.flying_hand.get_links():
+            for shape in link.get_collision_shapes():
+                groups = shape.get_collision_groups()
+                groups[2] |= 1 << 8
+                groups[3] = (groups[3] & 0xFFFF0000) | 0x143
+                shape.set_collision_groups(groups)
+
+    def _configure_flying_hand_gripper_control(self, gripper_config):
+        self.flying_hand_gripper_control_mode = gripper_config["joint_control_mode"]
+        if self.flying_hand_gripper_control_mode not in {"direct_position", "drive"}:
+            raise ValueError(f"Unsupported flying hand gripper joint_control_mode: {self.flying_hand_gripper_control_mode}")
+        if self.flying_hand_gripper_control_mode != "drive":
+            return
+
+        drive_config = gripper_config["drive"]
+        for joint in self.flying_hand_gripper_joints:
+            joint.set_drive_property(
+                stiffness=float(drive_config["stiffness"]),
+                damping=float(drive_config["damping"]),
+                force_limit=float(drive_config["force_limit"]),
+            )
+            joint.set_friction(float(drive_config["friction"]))
+
+    def _set_flying_hand_gripper_qpos(self, qpos):
+        joints_qpos = self.flying_hand.get_qpos()
+        joints_qpos[self.flying_hand_gripper_joint_indices] = qpos
+        self.flying_hand.set_qpos(joints_qpos)
+        joints_qvel = self.flying_hand.get_qvel()
+        joints_qvel[self.flying_hand_gripper_joint_indices] = 0.0
+        self.flying_hand.set_qvel(joints_qvel)
+
+    def _set_flying_hand_gripper_drive_target(self, qpos):
+        self.flying_hand.set_qf(self.flying_hand.compute_passive_force(gravity=True, coriolis_and_centrifugal=True))
+        for joint, target in zip(self.flying_hand_gripper_joints, qpos):
+            joint.set_drive_target(float(target))
+            joint.set_drive_velocity_target(0.0)
+
     def set_flying_hand_gripper(self, qpos, is_grasp=None):
+        qpos = np.array(qpos, dtype=float)
         if is_grasp is not None:
             self.is_grasping = bool(is_grasp)
-        for idx, joint in enumerate(self.flying_hand_gripper_joints):
-            joint.set_drive_target(qpos[idx])
-            joint.set_drive_velocity_target(0)
+            self.flying_hand_gripper_start_qpos = self.flying_hand.get_qpos()[self.flying_hand_gripper_joint_indices].copy()
+            self.flying_hand_gripper_step = 0
+            self.flying_hand_gripper_steps = self._seconds_to_steps(self.grasp_hold_seconds if self.is_grasping else self.release_hold_seconds)
+        else:
+            self.flying_hand_gripper_start_qpos = qpos.copy()
+            self.flying_hand_gripper_step = 0
+            self.flying_hand_gripper_steps = 0
+        self.flying_hand_gripper_qpos = qpos
+        if is_grasp is None:
+            self.apply_flying_hand_gripper_qpos()
+
+    def apply_flying_hand_gripper_qpos(self):
+        if self.flying_hand_gripper_step < self.flying_hand_gripper_steps:
+            self.flying_hand_gripper_step += 1
+            a = self.flying_hand_gripper_step / self.flying_hand_gripper_steps
+            if self.is_grasping:
+                qpos = self.flying_hand_gripper_start_qpos.copy()
+                diff = self.flying_hand_gripper_qpos - self.flying_hand_gripper_start_qpos
+                ids = self.flying_hand_gripper_prismatic_indices
+                r = self.flying_hand_gripper_prismatic_stage_ratio
+                h = self.flying_hand_gripper_prismatic_hold_ratio
+                if a < r - h:
+                    qpos[ids] += diff[ids] * self.flying_hand_gripper_prismatic_qpos_ratio * a / (r - h)
+                elif a < r:
+                    qpos[ids] += diff[ids] * self.flying_hand_gripper_prismatic_qpos_ratio
+                else:
+                    b = (a - r) / (1 - r)
+                    qpos[ids] += diff[ids] * (self.flying_hand_gripper_prismatic_qpos_ratio + (1 - self.flying_hand_gripper_prismatic_qpos_ratio) * b)
+                    ids = self.flying_hand_gripper_revolute_indices
+                    qpos[ids] += diff[ids] * b
+            else:
+                qpos = (1 - a) * self.flying_hand_gripper_start_qpos + a * self.flying_hand_gripper_qpos
+        else:
+            qpos = self.flying_hand_gripper_qpos
+        if self.flying_hand_gripper_control_mode == "drive":
+            self._set_flying_hand_gripper_drive_target(qpos)
+        else:
+            self._set_flying_hand_gripper_qpos(qpos)
 
     def _get_flying_hand_xyzyaw(self, root_pose):
         pose = self.initial_imu_odom_pose.inv() * (root_pose * (self.flying_hand_initial_pose.inv() * self.initial_imu_odom_pose))
@@ -638,7 +777,7 @@ class FlyingHandBaseTask(gym.Env):
         task_objects = [
             actor.get_name()
             for actor in self.scene.get_all_actors()
-            if actor.get_name() not in ["", "ground", "vertical_board"] and not actor.get_name().startswith("shelf")
+            if actor.get_name() not in ["", "ground", "wall"] and not actor.get_name().startswith(("shelf", "vertical_board"))
         ]
         obj_names, info = get_available_cluttered_objects(task_objects)
         obj_names = [

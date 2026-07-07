@@ -22,6 +22,7 @@ def set_actor_pose(actor, pose, vel=None):
 
 def step(env, n, save_freq=-1, carried_pose_fn=None):
     for _ in range(n):
+        env.apply_flying_hand_gripper_qpos()
         if carried_pose_fn is not None:
             actor, pose, vel = carried_pose_fn()
             set_actor_pose(actor, pose, vel)
@@ -38,7 +39,12 @@ def hold(env, pose, steps, save_freq=-1):
     for _ in range(steps):
         if env.enable_dynamics:
             env.flying_hand_ref_pose = pose
-            hand_pose, hand_v = env.flying_hand_dynamics.step(pose, np.zeros(3), np.zeros(3), env.is_grasping)
+            hand_pose, hand_v = env.flying_hand_dynamics.step(
+                pose,
+                np.zeros(3),
+                np.zeros(3),
+                env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
+            )
             env.flying_hand.set_root_pose(hand_pose)
             env.flying_hand.set_root_linear_velocity(hand_v.tolist())
             env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
@@ -115,7 +121,12 @@ def move_minco(env, poses, times=None, duration=None, steps=None, vels=None, acc
             ref_pose = sapien.Pose(p.tolist(), slerp(start.q, end.q, t / T).tolist())
             env.flying_hand_ref_pose = ref_pose
             if env.enable_dynamics:
-                hand_pose, hand_v = env.flying_hand_dynamics.step(ref_pose, v, a, env.is_grasping)
+                hand_pose, hand_v = env.flying_hand_dynamics.step(
+                    ref_pose,
+                    v,
+                    a,
+                    env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
+                )
                 env.flying_hand.set_root_pose(hand_pose)
                 env.flying_hand.set_root_linear_velocity(hand_v.tolist())
                 env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())

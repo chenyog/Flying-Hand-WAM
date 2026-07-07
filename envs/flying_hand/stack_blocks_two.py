@@ -8,15 +8,16 @@ from . import planner
 
 
 class stack_blocks_two(FlyingHandBaseTask):
-    block_half_size = np.array([0.035, 0.035, 0.035])
-    block_mass = 0.08
-    source_y_offsets = [-0.13, 0.13]
+    block_half_size = np.array([0.025, 0.025, 0.040])
+    block_mass = 0.05
+    source_y_offsets = [-0.18, 0.18]
     pre_grasp_x_offset = -0.55
-    grasp_x_offset = -0.09
+    grasp_x_offset = -0.065
     pull_out_x_offset = -0.50
-    grasp_z_offset = 0.03
+    grasp_y_offset = 0.015
+    grasp_z_offset = 0.050
     pull_out_z_offset = 0.23
-    stack_release_z_offset = 0.00
+    stack_release_z_offset = 0.0
 
     def load_actors(self):
         self._reset_board_slots()
@@ -41,8 +42,8 @@ class stack_blocks_two(FlyingHandBaseTask):
             )
         self.block1 = self._create_block("red block", self.red_slot_id, red_y, (1, 0, 0))
         self.block2 = self._create_block("green block", self.green_slot_id, green_y, (0, 1, 0))
-        self.add_prohibit_area(self.block1, padding=0.06)
-        self.add_prohibit_area(self.block2, padding=0.06)
+        self.add_prohibit_area(self.block1, padding=0.12)
+        self.add_prohibit_area(self.block2, padding=0.12)
 
     def _block_x(self):
         return self._board_front_x() - self.shelf_length + self.block_half_size[0]
@@ -62,15 +63,19 @@ class stack_blocks_two(FlyingHandBaseTask):
         self.add_task_objects(block)
         return self._place_actor_on_shelf(block, slot_id, y=y)
 
-    def _pose_from_center(self, center, x_offset, z_offset=0.0):
-        return self._get_flying_hand_pose_from_u_center([center[0] + x_offset, center[1], center[2] + z_offset])
+    def _get_block_grasp_pose(self, block, x_offset, z_offset=0.0):
+        bounds = self._get_actor_world_bounds(block)
+        center = (bounds[0] + bounds[1]) / 2
+        return self._get_flying_hand_pose_from_u_center([
+            center[0] + x_offset,
+            center[1] + self.grasp_y_offset,
+            center[2] + z_offset,
+        ])
 
     def _move_block(self, block, target_center, save_freq):
-        pre = self._get_flying_hand_pose(block, self.pre_grasp_x_offset, self.pull_out_z_offset)
-        grasp = self._get_flying_hand_pose(block, self.grasp_x_offset, self.grasp_z_offset)
-        pull = self._get_flying_hand_pose(block, self.pull_out_x_offset, self.pull_out_z_offset)
-        place_pre = self._pose_from_center(target_center, self.pull_out_x_offset, self.pull_out_z_offset)
-        place = self._pose_from_center(target_center, self.grasp_x_offset, self.grasp_z_offset)
+        pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.grasp_z_offset)
+        grasp = self._get_block_grasp_pose(block, self.grasp_x_offset, self.grasp_z_offset)
+        pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.grasp_z_offset)
         planner.move_minco(
             self,
             [self.flying_hand_initial_pose, pre, grasp],
@@ -79,17 +84,21 @@ class stack_blocks_two(FlyingHandBaseTask):
         )
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
         planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
+        carried_pose = self.flying_hand.get_root_pose().inv() * block.get_pose()
+        place = sapien.Pose(target_center.tolist(), block.get_pose().q) * carried_pose.inv()
+        place_pre = sapien.Pose((place.p + np.array([self.pull_out_x_offset - self.grasp_x_offset, 0.0, 0.0])).tolist(), place.q)
         planner.move_minco(
             self,
             [grasp, pull, place_pre, place],
             times=[self.grasp_to_pull_out_seconds, self.pull_out_to_place_seconds, self.pre_grasp_to_grasp_seconds],
             save_freq=save_freq,
             carried_actor=block,
-            carried_pose=self.flying_hand.get_root_pose().inv() * block.get_pose(),
+            carried_pose=carried_pose,
         )
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
         planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
-        return place, place_pre
+        planner.move_minco(self, [place, place_pre], times=[self.release_to_retreat_seconds], save_freq=save_freq)
+        return place_pre, None
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
