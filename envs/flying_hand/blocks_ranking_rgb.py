@@ -17,6 +17,8 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
     grasp_y_offset = 0.02
     grasp_z_offset = 0.050
     pull_out_z_offset = 0.26
+    release_retreat_z_offset = 0.10
+    release_lift_seconds = 0.6
 
     def load_actors(self):
         self._reset_board_slots()
@@ -98,8 +100,16 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         )
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
         planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
-        planner.move_minco(self, [place, place_pre], times=[self.release_to_retreat_seconds], save_freq=save_freq)
-        return place_pre, None
+        release_lift = np.array([0.0, 0.0, self.release_retreat_z_offset])
+        place_up = sapien.Pose((place.p + release_lift).tolist(), place.q)
+        place_pre_up = sapien.Pose((place_pre.p + release_lift).tolist(), place_pre.q)
+        planner.move_minco(
+            self,
+            [place, place_up, place_pre_up],
+            times=[self.release_lift_seconds, self.release_to_retreat_seconds],
+            save_freq=save_freq,
+        )
+        return place_pre_up, None
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
