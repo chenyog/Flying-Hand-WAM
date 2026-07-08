@@ -7,7 +7,7 @@ train:
     - ./data/flying_hand_lerobot/move_can_pot
     - ./data/flying_hand_lerobot/place_can_basket
     - ./data/flying_hand_lerobot/place_fruit_skillet
-    - ./data/flying_hand_lerobot/rotate_qrcode
+    - ./data/flying_hand_lerobot/thread_tape_rod
     - ./data/flying_hand_lerobot/shake_bottle
     - ./data/flying_hand_lerobot/stack_blocks_two
     - ./data/flying_hand_lerobot/stack_blocks_two_size

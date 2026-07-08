@@ -2,7 +2,7 @@
 
 defaults:
   - train
-  - override /task: flying_hand_1cam320_1e-4
+  - override /task: flying_hand_2cam512_1e-4
   - _self_
 
 ckpt: null
