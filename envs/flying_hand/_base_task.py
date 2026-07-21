@@ -676,10 +676,15 @@ class FlyingHandBaseTask(gym.Env):
                 obs["observation"][name].update(rgb[name])
         self.now_obs = deepcopy(obs)
         if self.eval_video_path is not None:
-            video_camera = self.cameras.wrist_camera_name
-            if video_camera not in obs["observation"]:
-                video_camera = next(iter(obs["observation"]))
-            self.eval_video_ffmpeg.stdin.write(obs["observation"][video_camera]["rgb"].tobytes())
+            if isinstance(self.eval_video_ffmpeg, dict):
+                for video_camera, ffmpeg in self.eval_video_ffmpeg.items():
+                    if video_camera in obs["observation"] and "rgb" in obs["observation"][video_camera]:
+                        ffmpeg.stdin.write(obs["observation"][video_camera]["rgb"].tobytes())
+            else:
+                video_camera = self.cameras.wrist_camera_name
+                if video_camera not in obs["observation"]:
+                    video_camera = next(iter(obs["observation"]))
+                self.eval_video_ffmpeg.stdin.write(obs["observation"][video_camera]["rgb"].tobytes())
         return obs
 
     def _take_picture(self):
@@ -755,8 +760,14 @@ class FlyingHandBaseTask(gym.Env):
 
     def _del_eval_video_ffmpeg(self):
         if self.eval_video_ffmpeg:
-            self.eval_video_ffmpeg.stdin.close()
-            self.eval_video_ffmpeg.wait()
+            if isinstance(self.eval_video_ffmpeg, dict):
+                for ffmpeg in self.eval_video_ffmpeg.values():
+                    ffmpeg.stdin.close()
+                for ffmpeg in self.eval_video_ffmpeg.values():
+                    ffmpeg.wait()
+            else:
+                self.eval_video_ffmpeg.stdin.close()
+                self.eval_video_ffmpeg.wait()
             self.eval_video_ffmpeg = None
 
     def close_env(self, clear_cache=False):

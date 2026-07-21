@@ -166,6 +166,8 @@ class WorldActionRobotWinPolicy:
         model_dtype: torch.dtype,
         action_horizon: int,
         replan_steps: int,
+        inference_latency_s: float,
+        action_execution_mode: str,
         num_inference_steps: int,
         sigma_shift: Optional[float],
         seed: Optional[int],
@@ -194,6 +196,10 @@ class WorldActionRobotWinPolicy:
 
         self.action_horizon = int(action_horizon)
         self.replan_steps = int(max(1, min(replan_steps, action_horizon)))
+        self.inference_latency_s = float(inference_latency_s)
+        self.action_execution_mode = str(action_execution_mode)
+        if self.action_execution_mode not in {"direct", "minco"}:
+            raise ValueError("`action_execution_mode` must be one of: direct, minco.")
         self.num_inference_steps = int(num_inference_steps)
         self.sigma_shift = sigma_shift
         self.seed = seed
@@ -462,11 +468,17 @@ class WorldActionRobotWinPolicy:
         action_chunk = self._denormalize_action(action_tensor)[0]  # [T, D]
         return action_chunk
 
-    def _fill_action_queue(self, observation: Dict[str, Any], instruction: str) -> None:
+    def _fill_action_queue(self, task_env, observation: Dict[str, Any], instruction: str) -> None:
         action_chunk = self._infer_action_chunk(observation=observation, instruction=instruction)
-        n_exec = min(self.replan_steps, action_chunk.shape[0])
-        for i in range(n_exec):
-            self.pending_actions.append(np.asarray(action_chunk[i], dtype=np.float32))
+        n = min(
+            action_chunk.shape[0],
+            self.replan_steps + int(np.ceil(self.inference_latency_s / (task_env.save_freq * task_env.sim_timestep))),
+        )
+        if self.action_execution_mode == "minco":
+            self.pending_actions.append((np.asarray(action_chunk[n - 1], dtype=np.float32), n))
+        else:
+            for i in range(n):
+                self.pending_actions.append((np.asarray(action_chunk[i], dtype=np.float32), 1))
 
     def should_request_observation(self) -> bool:
         return not self.pending_actions
@@ -479,16 +491,16 @@ class WorldActionRobotWinPolicy:
                     "(replan step for fastwam)."
                 )
             instruction = task_env.get_instruction()
-            self._fill_action_queue(observation=observation, instruction=instruction)
+            self._fill_action_queue(task_env=task_env, observation=observation, instruction=instruction)
 
         if not self.pending_actions:
             logger.warning("No action generated; skip current eval step.")
             return
 
-        action = self.pending_actions.popleft()
+        action, action_steps = self.pending_actions.popleft()
         sim_t0 = time.perf_counter() if self.timing_enabled else 0.0
         if action.shape[0] == 5:
-            steps = int(task_env.save_freq)
+            steps = int(task_env.save_freq) * int(action_steps)
             grasp = action[4] >= 0.5
             task_env.set_flying_hand_gripper(
                 task_env.flying_hand_config["gripper"]["close_qpos" if grasp else "open_qpos"],
@@ -510,8 +522,20 @@ class WorldActionRobotWinPolicy:
                 self.attached_actor = None
                 self.attached_pose = None
             target_pose = self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action)
-            self._track_flying_hand_world_pose(task_env, target_pose, steps, self.attached_actor, self.attached_pose)
-            task_env.take_action_cnt += 1
+            if self.action_execution_mode == "minco" and action_steps > 1:
+                from envs.flying_hand import planner
+
+                planner.move_minco(
+                    task_env,
+                    [task_env.flying_hand.get_root_pose(), target_pose],
+                    duration=steps * task_env.sim_timestep,
+                    save_freq=None,
+                    carried_actor=self.attached_actor,
+                    carried_pose=self.attached_pose,
+                )
+            else:
+                self._track_flying_hand_world_pose(task_env, target_pose, steps, self.attached_actor, self.attached_pose)
+            task_env.take_action_cnt += int(action_steps)
             task_env.eval_success = task_env.check_success()
         else:
             task_env.take_action(action, action_type="qpos")
@@ -579,6 +603,10 @@ def get_model(usr_args: Dict[str, Any]):
     replan_steps = _parse_optional_int(usr_args.get("replan_steps"))
     if replan_steps is None:
         replan_steps = int(cfg.EVALUATION.get("replan_steps", 8))
+    inference_latency_s = _parse_optional_float(usr_args.get("inference_latency_s"))
+    if inference_latency_s is None:
+        inference_latency_s = float(cfg.EVALUATION.get("inference_latency_s", 0.0))
+    action_execution_mode = str(usr_args.get("action_execution_mode", cfg.EVALUATION.get("action_execution_mode", "direct")))
 
     num_inference_steps = _parse_optional_int(usr_args.get("num_inference_steps"))
     if num_inference_steps is None:
@@ -607,6 +635,8 @@ def get_model(usr_args: Dict[str, Any]):
         model_dtype=model_dtype,
         action_horizon=action_horizon,
         replan_steps=replan_steps,
+        inference_latency_s=inference_latency_s,
+        action_execution_mode=action_execution_mode,
         num_inference_steps=num_inference_steps,
         sigma_shift=sigma_shift,
         seed=seed,

@@ -1,5 +1,4 @@
 import csv
-import json
 import os
 import subprocess
 import sys
@@ -100,12 +99,6 @@ def _mean_or_none(values: list[float | None]) -> float | None:
     return float(sum(valid) / len(valid))
 
 
-def _to_jsonable(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return float(value)
-
-
 @dataclass
 class RunningState:
     task_name: str
@@ -142,7 +135,6 @@ def main(cfg: DictConfig):
     manager_log = output_dir / "manager.log"
     failed_tasks_file = output_dir / "failed_tasks.txt"
     summary_csv = output_dir / "summary.csv"
-    summary_json = output_dir / "summary.json"
 
     task_name_cfg = cfg.EVALUATION.task_name
     if task_name_cfg is None or str(task_name_cfg).strip() == "":
@@ -234,23 +226,6 @@ def main(cfg: DictConfig):
                 writer.writerow([task, task_rates[task]])
             writer.writerow(["__overall__", mean])
 
-        payload = {
-            "per_task": [
-                {
-                    "task_name": task,
-                    "success_rate": _to_jsonable(task_rates[task]),
-                }
-                for task in tasks
-            ],
-            "overall": {
-                "mean_success_rate": _to_jsonable(mean),
-            },
-        }
-        summary_json.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
         with failed_tasks_file.open("w", encoding="utf-8") as f:
             for rec in failed_records:
                 f.write(
@@ -341,7 +316,7 @@ def main(cfg: DictConfig):
             )
 
     write_outputs()
-    log(f"summary saved: {summary_csv} and {summary_json}")
+    log(f"summary saved: {summary_csv}")
 
     if has_failure:
         raise RuntimeError(failure_message)

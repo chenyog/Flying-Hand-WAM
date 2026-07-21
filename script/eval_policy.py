@@ -60,6 +60,41 @@ def get_embodiment_config(robot_file):
     return embodiment_args
 
 
+def get_eval_video_sizes(args):
+    camera_args = args["camera"]
+    video_cameras = camera_args.get("video_cameras")
+    if not video_cameras:
+        video_cameras = [
+            key.removeprefix("collect_")
+            for key, value in camera_args.items()
+            if key.startswith("collect_") and value
+        ]
+    if not video_cameras:
+        video_cameras = [
+            key.removesuffix("_type")
+            for key in camera_args
+            if key.endswith("_camera_type")
+        ]
+
+    video_sizes = {}
+    for camera_name in video_cameras:
+        type_key = f"{camera_name}_type"
+        if type_key not in camera_args:
+            continue
+        camera_config = get_camera_config(camera_args[type_key])
+        video_sizes[camera_name] = str(camera_config["w"]) + "x" + str(camera_config["h"])
+    return video_sizes
+
+
+def get_eval_video_fps(args):
+    timestep = float(args["timestep"])
+    save_freq = float(args["save_freq"])
+    if timestep <= 0 or save_freq <= 0:
+        raise ValueError(f"`timestep` and `save_freq` must be positive, got {timestep=} {save_freq=}")
+    fps = 1.0 / (timestep * save_freq)
+    return int(round(fps)) if abs(fps - round(fps)) < 1e-6 else fps
+
+
 def main(usr_args):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_name = usr_args["task_name"]
@@ -68,7 +103,8 @@ def main(usr_args):
     # checkpoint_num = usr_args['checkpoint_num']
     policy_name = usr_args["policy_name"]
     instruction_type = usr_args["instruction_type"]
-    video_size = None
+    video_sizes = None
+    eval_video_fps = None
 
     get_model = eval_function_decorator(policy_name, "get_model")
 
@@ -94,9 +130,12 @@ def main(usr_args):
     with open(CONFIGS_PATH + "_camera_config.yml", "r", encoding="utf-8") as f:
         _camera_config = yaml.load(f.read(), Loader=yaml.FullLoader)
 
-    head_camera_type = args["camera"]["head_camera_type"]
-    args["head_camera_h"] = _camera_config[head_camera_type]["h"]
-    args["head_camera_w"] = _camera_config[head_camera_type]["w"]
+    for key, camera_type in args["camera"].items():
+        if not key.endswith("_camera_type"):
+            continue
+        camera_name = key.removesuffix("_type")
+        args[f"{camera_name}_h"] = _camera_config[camera_type]["h"]
+        args[f"{camera_name}_w"] = _camera_config[camera_type]["w"]
 
     if len(embodiment_type) == 1:
         args["left_robot_file"] = get_embodiment_file(embodiment_type[0])
@@ -126,8 +165,8 @@ def main(usr_args):
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
-        camera_config = get_camera_config(args["camera"]["head_camera_type"])
-        video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
+        video_sizes = get_eval_video_sizes(args)
+        eval_video_fps = get_eval_video_fps(args)
         save_dir.mkdir(parents=True, exist_ok=True)
         args["eval_video_save_dir"] = save_dir
 
@@ -175,7 +214,8 @@ def main(usr_args):
                                    model,
                                    st_seed,
                                    test_num=test_num,
-                                   video_size=video_size,
+                                   video_sizes=video_sizes,
+                                   eval_video_fps=eval_video_fps,
                                    instruction_type=instruction_type)
     suc_nums.append(suc_num)
 
@@ -198,7 +238,8 @@ def eval_policy(task_name,
                 model,
                 st_seed,
                 test_num=100,
-                video_size=None,
+                video_sizes=None,
+                eval_video_fps=None,
                 instruction_type=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
@@ -266,33 +307,36 @@ def eval_policy(task_name,
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
-            ffmpeg = subprocess.Popen(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "rawvideo",
-                    "-pixel_format",
-                    "rgb24",
-                    "-video_size",
-                    video_size,
-                    "-framerate",
-                    "10",
-                    "-i",
-                    "-",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-vcodec",
-                    "libx264",
-                    "-crf",
-                    "23",
-                    f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}.mp4",
-                ],
-                stdin=subprocess.PIPE,
-            )
-            TASK_ENV._set_eval_video_ffmpeg(ffmpeg)
+            ffmpegs = {}
+            for camera_name, video_size in video_sizes.items():
+                safe_camera_name = camera_name.replace("/", "_")
+                ffmpegs[camera_name] = subprocess.Popen(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-loglevel",
+                        "error",
+                        "-f",
+                        "rawvideo",
+                        "-pixel_format",
+                        "rgb24",
+                        "-video_size",
+                        video_size,
+                        "-framerate",
+                        str(eval_video_fps),
+                        "-i",
+                        "-",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-vcodec",
+                        "libx264",
+                        "-crf",
+                        "23",
+                        f"{TASK_ENV.eval_video_path}/episode{TASK_ENV.test_num}_{safe_camera_name}.mp4",
+                    ],
+                    stdin=subprocess.PIPE,
+                )
+            TASK_ENV._set_eval_video_ffmpeg(ffmpegs)
 
         succ = False
         reset_func(model)
