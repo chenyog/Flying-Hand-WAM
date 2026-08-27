@@ -507,8 +507,7 @@ class FlyingHandBaseTask(gym.Env):
         self.flying_hand = loader.load(str(self.flying_hand_asset_dir / self.flying_hand_config["urdf_path"]))
         self.flying_hand.set_name("flying_hand")
         self._set_flying_hand_materials()
-        for link in self.flying_hand.get_links():
-            link.set_mass(self.flying_hand_config["link_mass"])
+        self._configure_flying_hand_inertials()
         joints = self.flying_hand.get_active_joints()
         names = [joint.get_name() for joint in joints]
         self.flying_hand_joints = dict(zip(names, joints))
@@ -537,6 +536,50 @@ class FlyingHandBaseTask(gym.Env):
         self.imu_odom_link = self.flying_hand.find_link_by_name("imu_odom_link")
         self.initial_imu_odom_pose = self.imu_odom_link.get_pose()
         planner.hold(self, self.flying_hand_initial_pose, 30)
+
+    def _configure_flying_hand_inertials(self):
+        config = self.flying_hand_config["inertial"]
+        links = self.flying_hand.get_links()
+        urdf_total_mass = sum(float(link.get_mass()) for link in links)
+        target_mass = float(config["target_mass"])
+        if urdf_total_mass <= 0 or target_mass <= 0:
+            raise ValueError("Flying-hand URDF and target masses must be positive")
+
+        unmodeled_config = config.get("unmodeled_links", {})
+        unmodeled_names = set(unmodeled_config.get("names", []))
+        link_names = {link.get_name() for link in links}
+        unknown_names = unmodeled_names - link_names
+        if unknown_names:
+            raise ValueError(f"Unknown unmodeled flying-hand links: {sorted(unknown_names)}")
+        unmodeled_mass = float(unmodeled_config.get("mass", 0.0))
+        unmodeled_inertia = np.asarray(unmodeled_config.get("inertia", [0.0, 0.0, 0.0]), dtype=float)
+        if unmodeled_names and (
+            unmodeled_mass <= 0
+            or unmodeled_inertia.shape != (3,)
+            or np.any(unmodeled_inertia <= 0)
+        ):
+            raise ValueError("Unmodeled flying-hand links require positive mass and three positive inertias")
+        modeled_links = [link for link in links if link.get_name() not in unmodeled_names]
+        modeled_urdf_mass = sum(float(link.get_mass()) for link in modeled_links)
+        modeled_target_mass = target_mass - unmodeled_mass * len(unmodeled_names)
+        if modeled_urdf_mass <= 0 or modeled_target_mass <= 0:
+            raise ValueError("Modeled flying-hand mass must remain positive")
+
+        scale = modeled_target_mass / modeled_urdf_mass
+        scale_inertia = bool(config.get("scale_inertia_with_mass", True))
+        for link in links:
+            if link.get_name() in unmodeled_names:
+                link.set_mass(unmodeled_mass)
+                link.set_inertia(unmodeled_inertia)
+            else:
+                link.set_mass(float(link.get_mass()) * scale)
+                if scale_inertia:
+                    link.set_inertia(np.asarray(link.get_inertia(), dtype=float) * scale)
+
+        self.flying_hand_urdf_total_mass = urdf_total_mass
+        self.flying_hand_modeled_urdf_mass = modeled_urdf_mass
+        self.flying_hand_inertial_scale = scale
+        self.flying_hand_total_mass = sum(float(link.get_mass()) for link in links)
 
     def _set_flying_hand_materials(self):
         for link in self.flying_hand.get_links():
@@ -571,12 +614,16 @@ class FlyingHandBaseTask(gym.Env):
 
         drive_config = gripper_config["drive"]
         for joint in self.flying_hand_gripper_joints:
+            joint_config = drive_config
+            if "stiffness" not in drive_config:
+                joint_type = "prismatic" if "prismatic" in joint.get_name() else "revolute"
+                joint_config = drive_config[joint_type]
             joint.set_drive_property(
-                stiffness=float(drive_config["stiffness"]),
-                damping=float(drive_config["damping"]),
-                force_limit=float(drive_config["force_limit"]),
+                stiffness=float(joint_config["stiffness"]),
+                damping=float(joint_config["damping"]),
+                force_limit=float(joint_config["force_limit"]),
             )
-            joint.set_friction(float(drive_config["friction"]))
+            joint.set_friction(float(joint_config["friction"]))
 
     def _set_flying_hand_gripper_qpos(self, qpos):
         joints_qpos = self.flying_hand.get_qpos()

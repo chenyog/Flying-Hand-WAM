@@ -221,6 +221,8 @@ class WorldActionRobotWinPolicy:
         self._lazy_text_encoder = None
         self._lazy_tokenizer = None
 
+        # Direct mode stores one [D] action per queue entry.  MINCO mode stores
+        # a contiguous [T, D] chunk so every predicted waypoint is retained.
         self.pending_actions: deque[np.ndarray] = deque()
         self.attached_actor = None
         self.attached_pose = None
@@ -475,10 +477,91 @@ class WorldActionRobotWinPolicy:
             self.replan_steps + int(np.ceil(self.inference_latency_s / (task_env.save_freq * task_env.sim_timestep))),
         )
         if self.action_execution_mode == "minco":
-            self.pending_actions.append((np.asarray(action_chunk[n - 1], dtype=np.float32), n))
+            # Keep the full latency-compensated horizon.  Reducing this to only
+            # action_chunk[n - 1] changes the policy semantics into a single
+            # long current-to-endpoint motion and discards waypoint/gripper
+            # timing information.
+            self.pending_actions.append((np.asarray(action_chunk[:n], dtype=np.float32), n))
         else:
             for i in range(n):
                 self.pending_actions.append((np.asarray(action_chunk[i], dtype=np.float32), 1))
+
+    @staticmethod
+    def _split_flying_hand_actions_by_grasp(actions: np.ndarray) -> list[np.ndarray]:
+        """Split a MINCO chunk where the commanded binary gripper state changes."""
+        if len(actions) == 0:
+            return []
+        grasp = actions[:, 4] >= 0.5
+        boundaries = np.flatnonzero(grasp[1:] != grasp[:-1]) + 1
+        return np.split(actions, boundaries)
+
+    def _attach_nearest_task_actor(self, task_env) -> None:
+        from envs.utils.actor_utils import Actor
+
+        hand_pose = task_env.flying_hand.get_root_pose()
+        self.attached_actor = min(
+            [actor for actor in task_env.task_actors if type(actor) is Actor],
+            key=lambda actor: np.linalg.norm(actor.get_pose().p - hand_pose.p),
+        )
+        self.attached_pose = hand_pose.inv() * self.attached_actor.get_pose()
+
+    def _set_flying_hand_grasp(self, task_env, grasp: bool) -> None:
+        task_env.set_flying_hand_gripper(
+            task_env.flying_hand_config["gripper"]["close_qpos" if grasp else "open_qpos"],
+            is_grasp=grasp,
+        )
+        if not grasp:
+            self.grip_steps = 0
+            self.attached_actor = None
+            self.attached_pose = None
+
+    def _move_flying_hand_minco(self, task_env, actions: np.ndarray) -> None:
+        """Track all action waypoints at the task action interval with MINCO."""
+        from envs.flying_hand import planner
+
+        if len(actions) == 0:
+            return
+        poses = [task_env.flying_hand.get_root_pose()]
+        poses.extend(self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action) for action in actions)
+        action_dt = float(task_env.save_freq) * float(task_env.sim_timestep)
+        planner.move_minco(
+            task_env,
+            poses,
+            times=np.full(len(actions), action_dt, dtype=float),
+            # A frame is emitted at precisely the same 20 Hz action cadence as
+            # direct mode, rather than only at the outer replan boundary.
+            save_freq=int(task_env.save_freq),
+            carried_actor=self.attached_actor,
+            carried_pose=self.attached_pose,
+        )
+
+    def _execute_flying_hand_minco_chunk(self, task_env, actions: np.ndarray) -> None:
+        """Execute a predicted chunk without losing trajectory or gripper timing."""
+        action_dt = float(task_env.save_freq) * float(task_env.sim_timestep)
+        hold_actions = max(1, int(np.ceil(task_env.grasp_hold_seconds / action_dt)))
+
+        for segment in self._split_flying_hand_actions_by_grasp(actions):
+            grasp = bool(segment[0, 4] >= 0.5)
+            self._set_flying_hand_grasp(task_env, grasp)
+            if not grasp or self.attached_actor is not None:
+                self._move_flying_hand_minco(task_env, segment)
+                if grasp:
+                    self.grip_steps += len(segment)
+                continue
+
+            # Match direct mode's grasp-hold semantics.  Until the object is
+            # attached, execute the corresponding prefix without carrying it;
+            # the remainder of this same MINCO segment then carries the object.
+            before_attach = max(0, hold_actions - self.grip_steps)
+            prefix_len = min(len(segment), before_attach)
+            if prefix_len:
+                self._move_flying_hand_minco(task_env, segment[:prefix_len])
+                self.grip_steps += prefix_len
+            if self.grip_steps >= hold_actions and self.attached_actor is None:
+                self._attach_nearest_task_actor(task_env)
+            if prefix_len < len(segment):
+                self._move_flying_hand_minco(task_env, segment[prefix_len:])
+                self.grip_steps += len(segment) - prefix_len
 
     def should_request_observation(self) -> bool:
         return not self.pending_actions
@@ -499,42 +582,22 @@ class WorldActionRobotWinPolicy:
 
         action, action_steps = self.pending_actions.popleft()
         sim_t0 = time.perf_counter() if self.timing_enabled else 0.0
-        if action.shape[0] == 5:
+        if action.ndim == 2:
+            if action.shape[1] != 5:
+                raise ValueError(f"Expected flying-hand MINCO action chunk [T, 5], got {tuple(action.shape)}")
+            self._execute_flying_hand_minco_chunk(task_env, action)
+            task_env.take_action_cnt += int(action_steps)
+            task_env.eval_success = task_env.check_success()
+        elif action.shape[0] == 5:
             steps = int(task_env.save_freq) * int(action_steps)
             grasp = action[4] >= 0.5
-            task_env.set_flying_hand_gripper(
-                task_env.flying_hand_config["gripper"]["close_qpos" if grasp else "open_qpos"],
-                is_grasp=grasp,
-            )
+            self._set_flying_hand_grasp(task_env, grasp)
             if grasp:
                 self.grip_steps += 1
                 if self.attached_actor is None and self.grip_steps >= int(np.ceil(task_env.grasp_hold_seconds / (steps * task_env.sim_timestep))):
-                    from envs.utils.actor_utils import Actor
-
-                    hand_pose = task_env.flying_hand.get_root_pose()
-                    self.attached_actor = min(
-                        [actor for actor in task_env.task_actors if type(actor) is Actor],
-                        key=lambda actor: np.linalg.norm(actor.get_pose().p - hand_pose.p),
-                    )
-                    self.attached_pose = hand_pose.inv() * self.attached_actor.get_pose()
-            else:
-                self.grip_steps = 0
-                self.attached_actor = None
-                self.attached_pose = None
+                    self._attach_nearest_task_actor(task_env)
             target_pose = self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action)
-            if self.action_execution_mode == "minco" and action_steps > 1:
-                from envs.flying_hand import planner
-
-                planner.move_minco(
-                    task_env,
-                    [task_env.flying_hand.get_root_pose(), target_pose],
-                    duration=steps * task_env.sim_timestep,
-                    save_freq=None,
-                    carried_actor=self.attached_actor,
-                    carried_pose=self.attached_pose,
-                )
-            else:
-                self._track_flying_hand_world_pose(task_env, target_pose, steps, self.attached_actor, self.attached_pose)
+            self._track_flying_hand_world_pose(task_env, target_pose, steps, self.attached_actor, self.attached_pose)
             task_env.take_action_cnt += int(action_steps)
             task_env.eval_success = task_env.check_success()
         else:

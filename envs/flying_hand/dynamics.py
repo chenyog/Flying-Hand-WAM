@@ -12,6 +12,19 @@ def _vec(v):
     return np.array(v, dtype=float)
 
 
+def _inertia(v):
+    inertia = np.asarray(v, dtype=float)
+    if inertia.shape == (3,):
+        inertia = np.diag(inertia)
+    if inertia.shape != (3, 3):
+        raise ValueError(f"Inertia must contain 3 principal moments or a 3x3 tensor, got {inertia.shape}")
+    if not np.allclose(inertia, inertia.T, atol=1e-10):
+        raise ValueError("Inertia tensor must be symmetric")
+    if np.min(np.linalg.eigvalsh(inertia)) <= 0:
+        raise ValueError("Inertia tensor must be positive definite")
+    return inertia
+
+
 def _unit(v, fallback=None):
     n = np.linalg.norm(v)
     if n > 1e-8:
@@ -73,13 +86,12 @@ class FlyingHandDynamics:
         self.cfg = cfg
         p = cfg["nominal"]
         self.mass = float(p["mass"])
-        self.j = np.diag(_vec(p["inertia"]))
+        self.j = _inertia(p["inertia"])
         self.j_inv = np.linalg.inv(self.j)
         self.k_pos = _vec(cfg["control"]["k_pos"])
         self.k_vel = _vec(cfg["control"]["k_vel"])
         self.k_att = _vec(cfg["control"]["k_att"])
         self.k_omega = _vec(cfg["control"]["k_omega"])
-        self.torque_max = _vec(cfg["limits"]["torque_max"])
         self.bodyrates_max = _vec(cfg["limits"]["bodyrates_max"])
         self.thrust_min = np.array(cfg["limits"]["rotor_thrusts_min"], dtype=float)
         self.thrust_max = np.array(cfg["limits"]["rotor_thrusts_max"], dtype=float)
@@ -184,7 +196,18 @@ class FlyingHandDynamics:
         qe = _qmul(_qinv(self.q), q_des)
         if qe[0] < 0:
             qe *= -1
-        torque = np.clip(self.k_att * (2 * qe[1:]) - self.k_omega * self.w - self.torque_l1, -self.torque_max, self.torque_max)
+        desired_bodyrates = np.clip(
+            self.k_att * (2 * qe[1:]),
+            -self.bodyrates_max,
+            self.bodyrates_max,
+        )
+        bodyrate_error = t3d.quaternions.quat2mat(qe) @ desired_bodyrates - self.w
+        desired_angular_acceleration = self.k_omega * bodyrate_error
+        torque = (
+            self.j @ desired_angular_acceleration
+            + np.cross(self.w, self.j @ self.w)
+            - self.torque_l1
+        )
         thrust = max(float(f.dot(r[:, 2])), 0.0)
         u = np.r_[thrust, torque]
         g = self.allocation(grasped)
@@ -199,14 +222,18 @@ class FlyingHandDynamics:
         self.v += (r @ np.array([0.0, 0.0, thrust]) / self.mass - np.array([0.0, 0.0, G])) * self.dt
         self.p += self.v * self.dt
         self.w += self.j_inv @ (torque - np.cross(self.w, self.j @ self.w)) * self.dt
-        self.w = np.clip(self.w, -self.bodyrates_max, self.bodyrates_max)
         self.q = _qmul(self.q, np.r_[1.0, 0.5 * self.w * self.dt])
         self.q /= np.linalg.norm(self.q)
         self.debug = {
             "mode": "grasped" if grasped else "free",
             "rotor_position": self.rot["grasped" if grasped else "free"].copy(),
             "allocation": g.copy(),
+            "mass": self.mass,
+            "inertia": self.j.copy(),
             "rotor_thrust": rot_thrust.copy(),
+            "desired_bodyrates": desired_bodyrates.copy(),
+            "bodyrate_error": bodyrate_error.copy(),
+            "desired_angular_acceleration": desired_angular_acceleration.copy(),
             "estimator_enabled": self.estimator_enabled,
             "force_l1": self.force_l1.copy(),
             "torque_l1": self.torque_l1.copy(),
