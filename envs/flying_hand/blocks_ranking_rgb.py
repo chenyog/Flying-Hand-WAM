@@ -15,8 +15,12 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
     grasp_x_offset = -0.10
     pull_out_x_offset = -0.54
     grasp_y_offset = 0.02
+    # Keep the flying-hand's u_center clear of the shelf and neighboring
+    # blocks.  The object itself remains supported by the shelf until grasp.
+    pre_grasp_z_offset = 0.12
     grasp_z_offset = 0.050
-    pull_out_z_offset = 0.26
+    pull_out_z_offset = 0.28
+    place_pre_z_offset = 0.08
     release_retreat_z_offset = 0.10
     release_lift_seconds = 0.6
 
@@ -71,9 +75,9 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         ])
 
     def _move_block(self, start, block, target_center, save_freq, retreat=None, last=False):
-        pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.grasp_z_offset)
+        pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         grasp = self._get_block_grasp_pose(block, self.grasp_x_offset, self.grasp_z_offset)
-        pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.grasp_z_offset)
+        pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.pull_out_z_offset)
 
         planner.move_minco(
             self,
@@ -89,7 +93,11 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         carried_pose = self.flying_hand.get_root_pose().inv() * block.get_pose()
         place = sapien.Pose(target_center.tolist(), block.get_pose().q) * carried_pose.inv()
-        place_pre = sapien.Pose((place.p + np.array([self.pull_out_x_offset - self.grasp_x_offset, 0.0, 0.0])).tolist(), place.q)
+        place_pre = sapien.Pose((place.p + np.array([
+            self.pull_out_x_offset - self.grasp_x_offset,
+            0.0,
+            self.place_pre_z_offset,
+        ])).tolist(), place.q)
         planner.move_minco(
             self,
             [grasp, pull, place_pre, place],

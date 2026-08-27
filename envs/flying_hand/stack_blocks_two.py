@@ -15,8 +15,10 @@ class stack_blocks_two(FlyingHandBaseTask):
     grasp_x_offset = -0.10
     pull_out_x_offset = -0.50
     grasp_y_offset = 0.02
+    pre_grasp_z_offset = 0.12
     grasp_z_offset = 0.050
-    pull_out_z_offset = 0.23
+    pull_out_z_offset = 0.25
+    place_pre_z_offset = 0.08
     stack_release_z_offset = 0.0
     release_retreat_z_offset = 0.08
     release_lift_seconds = 0.6
@@ -77,9 +79,9 @@ class stack_blocks_two(FlyingHandBaseTask):
     def _move_block(self, block, target_center, save_freq):
         self.is_grasping = False
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"])
-        pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.grasp_z_offset)
+        pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         grasp = self._get_block_grasp_pose(block, self.grasp_x_offset, self.grasp_z_offset)
-        pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.grasp_z_offset)
+        pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.pull_out_z_offset)
         planner.move_minco(
             self,
             [self.flying_hand_initial_pose, pre, grasp],
@@ -90,7 +92,11 @@ class stack_blocks_two(FlyingHandBaseTask):
         planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         carried_pose = self.flying_hand.get_root_pose().inv() * block.get_pose()
         place = sapien.Pose(target_center.tolist(), block.get_pose().q) * carried_pose.inv()
-        place_pre = sapien.Pose((place.p + np.array([self.pull_out_x_offset - self.grasp_x_offset, 0.0, 0.0])).tolist(), place.q)
+        place_pre = sapien.Pose((place.p + np.array([
+            self.pull_out_x_offset - self.grasp_x_offset,
+            0.0,
+            self.place_pre_z_offset,
+        ])).tolist(), place.q)
         planner.move_minco(
             self,
             [grasp, pull, place_pre, place],

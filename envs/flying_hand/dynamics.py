@@ -208,6 +208,7 @@ class FlyingHandDynamics:
             + np.cross(self.w, self.j @ self.w)
             - self.torque_l1
         )
+        torque_command = torque.copy()
         thrust = max(float(f.dot(r[:, 2])), 0.0)
         u = np.r_[thrust, torque]
         g = self.allocation(grasped)
@@ -231,6 +232,9 @@ class FlyingHandDynamics:
             "mass": self.mass,
             "inertia": self.j.copy(),
             "rotor_thrust": rot_thrust.copy(),
+            "torque_command": torque_command,
+            "torque_applied": torque.copy(),
+            "torque_allocation_error": torque - torque_command,
             "desired_bodyrates": desired_bodyrates.copy(),
             "bodyrate_error": bodyrate_error.copy(),
             "desired_angular_acceleration": desired_angular_acceleration.copy(),

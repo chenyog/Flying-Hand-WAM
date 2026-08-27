@@ -11,8 +11,10 @@ class blocks_ranking_size(blocks_ranking_rgb):
     pre_grasp_x_offset = -0.58
     grasp_x_offset = -0.10
     pull_out_x_offset = -0.58
+    pre_grasp_z_offset = 0.13
     grasp_z_offset = 0.045
     pull_out_z_offset = 0.34
+    place_pre_z_offset = 0.08
     pull_out_to_place_seconds = 2.4
     block_y_offsets = [-0.18, 0.0, 0.18]
     block_half_sizes = np.array([
