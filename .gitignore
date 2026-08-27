@@ -16,6 +16,10 @@ eval_result/
 # Code Generation
 assets/*
 !assets/_download.py
+!assets/embodiments/
+assets/embodiments/*
+!assets/embodiments/flying-hand/
+!assets/embodiments/flying-hand/**
 
 policy/weights/*
 

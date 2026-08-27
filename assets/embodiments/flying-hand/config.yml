@@ -1,0 +1,128 @@
+urdf_path: "./flying_hand_with_rotor.urdf"
+inertial:
+  # Preserve the URDF mass distribution while matching the controller's total mass.
+  target_mass: 0.8
+  scale_inertia_with_mass: true
+  # These visual-only URDF links have no <inertial>; keep them numerically valid
+  # without treating SAPIEN's fallback inertia as measured data.
+  unmodeled_links:
+    names:
+    - "left_down_rotor_link"
+    - "left_up_rotor_link"
+    - "right_down_rotor_link"
+    - "right_up_rotor_link"
+    mass: 1.0e-6
+    inertia: [1.0e-9, 1.0e-9, 2.0e-9]
+
+root:
+  qpos: [1.0, 0.0, 0.0, 0.0]
+  u_center_offset: [-0.13, -0.058, -0.005]
+
+gripper:
+  joint_control_mode: drive
+  disable_self_collision: true
+  close_prismatic_stage_ratio: 0.35
+  close_prismatic_hold_ratio: 0.10
+  close_prismatic_qpos_ratio: 0.35
+  drive:
+    revolute:
+      stiffness: 10.0       # N m / rad
+      damping: 1.0          # N m s / rad
+      force_limit: 0.15     # N m
+      friction: 0.0
+    prismatic:
+      stiffness: 100.0      # N / m
+      damping: 8.0          # N s / m
+      force_limit: 1.0      # N
+      friction: 0.0
+  joint_names:
+  - "left_revolute_joint"
+  - "left_prismatic_joint"
+  - "down_left_prismatic_joint"
+  - "down_right_prismatic_joint"
+  - "right_prismatic_joint"
+  - "right_revolute_joint"
+  open_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  close_qpos: [-0.34906585, 0.045, 0.0, 0.035, -0.045, 0.34906585]
+
+dynamics:
+  nominal:
+    mass: 0.8
+    # Fixed control inertia: diagonal of the SAPIEN composite inertia at
+    # gripper.open_qpos after the URDF mass distribution is scaled to 0.8 kg.
+    # It is deliberately unchanged when the gripper closes or grasps an object.
+    inertia: [0.00347739056, 0.00398937023, 0.00696294292]
+  rotor:
+    thrust_coeff: 7.19543e-9
+    moment_coeff: 1.12968e-10
+  free:
+    rotor_position:
+    - [0.07424621202458748, -0.07424621202458748]
+    - [-0.07424621202458748, 0.07424621202458748]
+    - [0.07424621202458748, 0.07424621202458748]
+    - [-0.07424621202458748, -0.07424621202458748]
+  grasped:
+    rotor_position:
+    - [0.06010407640085654, -0.06010407640085654]
+    - [-0.06010407640085654, 0.06010407640085654]
+    - [0.06010407640085654, 0.06010407640085654]
+    - [-0.06010407640085654, -0.06010407640085654]
+  limits:
+    rotor_thrusts_min: [0.2374948, 0.2374948, 0.2374948, 0.2374948]
+    rotor_thrusts_max: [2.374948, 2.374948, 2.374948, 2.374948]
+    tilt_angle_max: 0.9
+    bodyrates_max: [6.0, 6.0, 3.0]
+  control:
+    k_pos: [5.5, 5.5, 5.0]
+    k_vel: [6.0, 6.0, 5.5]
+    k_att: [45.0, 45.0, 8.0]
+    k_omega: [12.0, 12.0, 7.0]
+  estimator:
+    enabled: true
+    as_v: -5.0
+    # Keep the angular L1 channel below the available grasped-flight torque
+    # authority.  Larger bounds previously saturated all four rotors during
+    # long block moves and then amplified the attitude error.
+    as_omega: -3.0
+    thrust_cutoff: 30.0
+    torque_cutoff1: 2.0
+    torque_cutoff2: 6.0
+    force_bound: [3.0, 3.0, 3.0]
+    torque_bound: [0.01, 0.01, 0.002]
+
+camera:
+  wrist_name: "wrist_camera"
+  wrist_link: "mid_camera_link"
+
+materials:
+  black_color: [0.101960784313725, 0.101960784313725, 0.101960784313725, 1.0]
+  silver_color: [0.8, 0.8, 0.8, 1.0]
+  black_link_names:
+  - "imu_odom_link"
+  - "camera_link"
+  - "mid_camera_link"
+  - "left_up_link"
+  - "left_down_link"
+  - "right_down_link"
+  - "right_up_link"
+  - "left_tof_link"
+  - "right_tof_link"
+  silver_link_names:
+  - "left_slide_link"
+  - "down_slide_link"
+  - "right_slide_link"
+
+static_camera_list:
+- name: head_camera
+  position:
+  - -2.25
+  - 0.0
+  - 1.50
+  forward:
+  - 1
+  - 0
+  - 0
+  left:
+  - 0
+  - 1
+  - 0

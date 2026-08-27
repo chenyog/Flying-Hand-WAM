@@ -1,0 +1,2244 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.1-13-g25da24a-dirty  Build Version: 1.6.9483.20188
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="mid_camera">
+  <link
+    name="imu_odom_link">
+    <inertial>
+      <origin
+        xyz="-1.38777878078145E-17 -5.55111512312578E-17 -0.001"
+        rpy="0 0 0" />
+      <mass
+        value="0.00171170265964765" />
+      <inertia
+        ixx="1.25906167037911E-07"
+        ixy="-1.01580041043502E-22"
+        ixz="-4.75030019983363E-26"
+        iyy="1.25906167037911E-07"
+        iyz="1.64083068285936E-26"
+        izz="2.5067119896939E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/imu_odom_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+  </link>
+  <link
+    name="camera_link">
+    <inertial>
+      <origin
+        xyz="-0.0106586996057739 -3.28441800426238E-06 -2.18961200298962E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.00309910619901185" />
+      <inertia
+        ixx="1.69614302993504E-07"
+        ixy="-1.54478912556466E-21"
+        ixz="3.78237300159021E-23"
+        iyy="8.32811297610358E-08"
+        iyz="2.39542385404465E-09"
+        izz="1.37984943215999E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/camera_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+  </link>
+  <joint
+    name="camera_fixed_joint"
+    type="fixed">
+    <origin
+      xyz="0.0571586996057803 0.00809999999999608 -0.0047666666666667"
+      rpy="0 0 0" />
+    <parent
+      link="imu_odom_link" />
+    <child
+      link="camera_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="left_up_link">
+    <inertial>
+      <origin
+        xyz="0.0299716861399019 -0.00848169981495536 -0.0303061752602178"
+        rpy="0 0 0" />
+      <mass
+        value="0.0155106551704419" />
+      <inertia
+        ixx="6.06074459609444E-06"
+        ixy="-2.76902159182998E-07"
+        ixz="3.82880277492618E-08"
+        iyy="1.15254268363567E-05"
+        iyz="-1.84166233566332E-08"
+        izz="1.20135140813105E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/left_up_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+    <collision name="left_up_body_box">
+      <origin
+        xyz="0.02416 -0.00073 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.06235 0.04983 0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_1">
+      <origin
+        xyz="-0.006315 0.027796 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_2">
+      <origin
+        xyz="0.000101 0.0278 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_3">
+      <origin
+        xyz="0.006517 0.027804 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_4">
+      <origin
+        xyz="0.012933 0.027807 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_5">
+      <origin
+        xyz="0.019349 0.027811 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_6">
+      <origin
+        xyz="0.025765 0.027814 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_7">
+      <origin
+        xyz="0.032181 0.027801 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_8">
+      <origin
+        xyz="0.038563 0.027213 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_9">
+      <origin
+        xyz="0.044834 0.025905 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_10">
+      <origin
+        xyz="0.050876 0.023791 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_11">
+      <origin
+        xyz="0.056554 0.020833 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_12">
+      <origin
+        xyz="0.061576 0.016868 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_13">
+      <origin
+        xyz="0.065522 0.011838 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_14">
+      <origin
+        xyz="0.067845 0.005912 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_15">
+      <origin
+        xyz="0.0683 -0.000467 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_16">
+      <origin
+        xyz="0.068272 -0.006735 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_17">
+      <origin
+        xyz="0.065872 -0.012652 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_18">
+      <origin
+        xyz="0.062082 -0.017797 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_19">
+      <origin
+        xyz="0.057164 -0.021885 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_20">
+      <origin
+        xyz="0.051542 -0.024945 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_21">
+      <origin
+        xyz="0.045534 -0.027162 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_22">
+      <origin
+        xyz="0.039283 -0.028563 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_23">
+      <origin
+        xyz="0.032911 -0.029239 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_24">
+      <origin
+        xyz="0.026501 -0.02905 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_25">
+      <origin
+        xyz="0.020153 -0.028151 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_26">
+      <origin
+        xyz="0.013894 -0.026741 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_27">
+      <origin
+        xyz="0.007644 -0.025292 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_28">
+      <origin
+        xyz="0.001393 -0.023844 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_29">
+      <origin
+        xyz="-0.004857 -0.022396 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_30">
+      <origin
+        xyz="-0.00629 -0.017117 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_31">
+      <origin
+        xyz="-0.006294 -0.0107 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_32">
+      <origin
+        xyz="-0.006298 -0.004284 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_33">
+      <origin
+        xyz="-0.006301 0.002132 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_34">
+      <origin
+        xyz="-0.006305 0.008548 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_35">
+      <origin
+        xyz="-0.006308 0.014964 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="left_up_edge_cyl_36">
+      <origin
+        xyz="-0.006312 0.02138 -0.0335"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_revolute_joint"
+    type="revolute">
+    <origin
+      xyz="-0.0224999999999945 -0.00100000000000239 0.0266999999999999"
+      rpy="0 0 0" />
+    <parent
+      link="imu_odom_link" />
+    <child
+      link="left_up_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-0.34906585"
+      upper="0"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="left_slide_link">
+    <inertial>
+      <origin
+        xyz="-0.0697365401206591 0.00381828659262695 -0.00170000000000003"
+        rpy="0 0 0" />
+      <mass
+        value="0.00289642226946452" />
+      <inertia
+        ixx="8.95774381633568E-09"
+        ixy="1.65989522534646E-20"
+        ixz="-1.97116967193383E-23"
+        iyy="2.18091489470464E-06"
+        iyz="2.53161309318774E-24"
+        izz="2.18340778004486E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/left_slide_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+    <collision name="left_slide_box">
+      <origin
+        xyz="-0.069737 0.003818 -0.0017"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.096 0.0325 0.0484" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_up_fixed_joint"
+    type="fixed">
+    <origin
+      xyz="0.0100865401206647 -0.000568286592629197 -0.00180000000000008"
+      rpy="0 0 0" />
+    <parent
+      link="imu_odom_link" />
+    <child
+      link="left_slide_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="left_down_link">
+    <inertial>
+      <origin
+        xyz="-0.0335149111496545 -0.0132332953071617 0.00912813250507055"
+        rpy="0 0 0" />
+      <mass
+        value="0.0141289150661083" />
+      <inertia
+        ixx="7.66227477781223E-06"
+        ixy="-2.33106448515045E-06"
+        ixz="-3.40837753615777E-23"
+        iyy="9.47258729533062E-06"
+        iyz="-5.62032703782064E-23"
+        izz="1.71254427964321E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/left_down_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+    <collision name="left_down_body_box_1">
+      <origin
+        xyz="-0.03806 -0.01869 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.05524 0.05172 0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_body_box_2">
+      <origin
+        xyz="-0.00318 -0.00236 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.02035 0.05172 0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_1">
+      <origin
+        xyz="-0.0708 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_2">
+      <origin
+        xyz="-0.0708 -0.042931 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_3">
+      <origin
+        xyz="-0.0708 -0.036561 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_4">
+      <origin
+        xyz="-0.0708 -0.030192 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_5">
+      <origin
+        xyz="-0.0708 -0.023823 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_6">
+      <origin
+        xyz="-0.0708 -0.017454 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_7">
+      <origin
+        xyz="-0.070571 -0.011095 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_8">
+      <origin
+        xyz="-0.069357 -0.004867 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_9">
+      <origin
+        xyz="-0.066844 0.000967 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_10">
+      <origin
+        xyz="-0.063049 0.006063 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_11">
+      <origin
+        xyz="-0.058139 0.010086 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_12">
+      <origin
+        xyz="-0.053079 0.013937 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_13">
+      <origin
+        xyz="-0.04798 0.017731 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_14">
+      <origin
+        xyz="-0.042205 0.020395 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_15">
+      <origin
+        xyz="-0.03609 0.022122 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_16">
+      <origin
+        xyz="-0.029764 0.022768 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_17">
+      <origin
+        xyz="-0.023396 0.0228 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_18">
+      <origin
+        xyz="-0.017026 0.0228 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_19">
+      <origin
+        xyz="-0.010657 0.0228 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_20">
+      <origin
+        xyz="-0.004288 0.0228 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_21">
+      <origin
+        xyz="0.002081 0.0228 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_22">
+      <origin
+        xyz="0.0063 0.020649 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_23">
+      <origin
+        xyz="0.0063 0.01428 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_24">
+      <origin
+        xyz="0.0063 0.007911 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_25">
+      <origin
+        xyz="0.0063 0.001542 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_26">
+      <origin
+        xyz="0.0063 -0.004828 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_27">
+      <origin
+        xyz="0.0063 -0.011197 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_28">
+      <origin
+        xyz="0.0063 -0.017566 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_29">
+      <origin
+        xyz="0.0063 -0.023936 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_30">
+      <origin
+        xyz="0.002473 -0.028107 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_31">
+      <origin
+        xyz="-0.002635 -0.031903 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_32">
+      <origin
+        xyz="-0.007323 -0.036198 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_33">
+      <origin
+        xyz="-0.011547 -0.040949 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_34">
+      <origin
+        xyz="-0.015297 -0.04609 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_35">
+      <origin
+        xyz="-0.019846 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_36">
+      <origin
+        xyz="-0.026215 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_37">
+      <origin
+        xyz="-0.032584 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_38">
+      <origin
+        xyz="-0.038954 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_39">
+      <origin
+        xyz="-0.045323 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_40">
+      <origin
+        xyz="-0.051692 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_41">
+      <origin
+        xyz="-0.058061 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="left_down_edge_cyl_42">
+      <origin
+        xyz="-0.064431 -0.0493 0.0015"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left_prismatic_joint"
+    type="prismatic">
+    <origin
+      xyz="-0.101151556423715 0.00306828659175715 -0.00319999999999993"
+      rpy="0 0 0" />
+    <parent
+      link="left_slide_link" />
+    <child
+      link="left_down_link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.045"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="down_slide_link">
+    <inertial>
+      <origin
+        xyz="0.00524999999992161 -0.0400000000000002 0.00193152556104104"
+        rpy="0 0 0" />
+      <mass
+        value="0.00289642226946453" />
+      <inertia
+        ixx="2.18091489470464E-06"
+        ixy="-3.66197952259138E-18"
+        ixz="-3.29850597862568E-24"
+        iyy="8.95774381633566E-09"
+        iyz="5.38913162244037E-22"
+        izz="2.18340778004487E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/down_slide_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+    <collision name="down_slide_box">
+      <origin
+        xyz="0.00525 -0.04 0.00185"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.0355 0.096 0.0037" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="down_left_prismatic_joint"
+    type="prismatic">
+    <origin
+      xyz="-0.0494999999999859 -0.0389999999991337 -0.0227"
+      rpy="0 0 0" />
+    <parent
+      link="left_down_link" />
+    <child
+      link="down_slide_link" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="0"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="right_down_link">
+    <inertial>
+      <origin
+        xyz="0.0192556119189836 -0.0316323122807332 0.0273586231834941"
+        rpy="0 0 0" />
+      <mass
+        value="0.0141289150661083" />
+      <inertia
+        ixx="7.6622747778123E-06"
+        ixy="2.33106448515048E-06"
+        ixz="1.59297637830708E-23"
+        iyy="9.47258729533055E-06"
+        iyz="-4.10242958497852E-23"
+        izz="1.71254427964321E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/right_down_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+    <collision name="right_down_body_box_1">
+      <origin
+        xyz="0.01471 -0.02617 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.05524 0.05172 0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_body_box_2">
+      <origin
+        xyz="0.04959 -0.0425 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.02035 0.05172 0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_1">
+      <origin
+        xyz="-0.018029 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_2">
+      <origin
+        xyz="-0.01166 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_3">
+      <origin
+        xyz="-0.005291 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_4">
+      <origin
+        xyz="0.001078 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_5">
+      <origin
+        xyz="0.007448 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_6">
+      <origin
+        xyz="0.013817 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_7">
+      <origin
+        xyz="0.020186 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_8">
+      <origin
+        xyz="0.026555 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_9">
+      <origin
+        xyz="0.032925 0.004434 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_10">
+      <origin
+        xyz="0.037474 0.001224 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_11">
+      <origin
+        xyz="0.041223 -0.003917 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_12">
+      <origin
+        xyz="0.045447 -0.008668 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_13">
+      <origin
+        xyz="0.050136 -0.012963 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_14">
+      <origin
+        xyz="0.055244 -0.016759 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_15">
+      <origin
+        xyz="0.059071 -0.02093 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_16">
+      <origin
+        xyz="0.059071 -0.027299 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_17">
+      <origin
+        xyz="0.059071 -0.033669 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_18">
+      <origin
+        xyz="0.059071 -0.040038 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_19">
+      <origin
+        xyz="0.059071 -0.046407 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_20">
+      <origin
+        xyz="0.059071 -0.052776 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_21">
+      <origin
+        xyz="0.059071 -0.059146 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_22">
+      <origin
+        xyz="0.059071 -0.065515 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_23">
+      <origin
+        xyz="0.054852 -0.067666 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_24">
+      <origin
+        xyz="0.048483 -0.067666 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_25">
+      <origin
+        xyz="0.042113 -0.067666 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_26">
+      <origin
+        xyz="0.035744 -0.067666 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_27">
+      <origin
+        xyz="0.029375 -0.067666 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_28">
+      <origin
+        xyz="0.023007 -0.067633 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_29">
+      <origin
+        xyz="0.01668 -0.066988 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_30">
+      <origin
+        xyz="0.010565 -0.06526 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_31">
+      <origin
+        xyz="0.00479 -0.062597 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_32">
+      <origin
+        xyz="-0.000308 -0.058803 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_33">
+      <origin
+        xyz="-0.005369 -0.054952 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_34">
+      <origin
+        xyz="-0.010278 -0.050929 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_35">
+      <origin
+        xyz="-0.014074 -0.045833 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_36">
+      <origin
+        xyz="-0.016586 -0.039999 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_37">
+      <origin
+        xyz="-0.0178 -0.033771 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_38">
+      <origin
+        xyz="-0.018029 -0.027412 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_39">
+      <origin
+        xyz="-0.018029 -0.021043 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_40">
+      <origin
+        xyz="-0.018029 -0.014673 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_41">
+      <origin
+        xyz="-0.018029 -0.008304 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+    <collision name="right_down_edge_cyl_42">
+      <origin
+        xyz="-0.018029 -0.001935 0.01973"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.057" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="down_right_prismatic_joint"
+    type="prismatic">
+    <origin
+      xyz="-0.00327052306865322 -0.0736898341708659 0.00446950932157653"
+      rpy="0 0 0" />
+    <parent
+      link="down_slide_link" />
+    <child
+      link="right_down_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="0.035"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="right_slide_link">
+    <inertial>
+      <origin
+        xyz="0.0400000001237646 0.00374999999717058 0.0242000000000002"
+        rpy="0 0 0" />
+      <mass
+        value="0.00289642226946451" />
+      <inertia
+        ixx="8.95774381633564E-09"
+        ixy="-5.70871856362769E-21"
+        ixz="8.322435784977E-24"
+        iyy="2.18091489470463E-06"
+        iyz="-7.29201846274453E-24"
+        izz="2.18340778004485E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/right_slide_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+    <collision name="right_slide_box">
+      <origin
+        xyz="0.04 0.00375 0.0242"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.096 0.0325 0.0484" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_prismatic_joint"
+    type="prismatic">
+    <origin
+      xyz="0.0471029444815075 -0.0493656075888083 -0.00446950932157653"
+      rpy="0 0 0" />
+    <parent
+      link="right_down_link" />
+    <child
+      link="right_slide_link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.045"
+      upper="0"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="right_up_link">
+    <inertial>
+      <origin
+        xyz="0.0311554675393702 0.00965316496475064 -0.0238858444755436"
+        rpy="0 0 0" />
+      <mass
+        value="0.0160489046945383" />
+      <inertia
+        ixx="6.36550379211309E-06"
+        ixy="6.75138843863702E-07"
+        ixz="7.79328022508396E-08"
+        iyy="1.22766837874428E-05"
+        iyz="4.72101864124509E-09"
+        izz="1.30092881921732E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/right_up_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+    <collision name="right_up_body_box">
+      <origin
+        xyz="0.02542 -0.0004 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <box
+          size="0.06546 0.04807 0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_1">
+      <origin
+        xyz="-0.006077 0.022623 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_2">
+      <origin
+        xyz="0.000217 0.024021 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_3">
+      <origin
+        xyz="0.00651 0.02542 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_4">
+      <origin
+        xyz="0.012803 0.026818 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_5">
+      <origin
+        xyz="0.019101 0.028194 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_6">
+      <origin
+        xyz="0.025466 0.029178 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_7">
+      <origin
+        xyz="0.031901 0.029414 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_8">
+      <origin
+        xyz="0.038318 0.028889 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_9">
+      <origin
+        xyz="0.044622 0.027587 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_10">
+      <origin
+        xyz="0.0507 0.025476 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_11">
+      <origin
+        xyz="0.056405 0.022505 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_12">
+      <origin
+        xyz="0.061533 0.018623 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_13">
+      <origin
+        xyz="0.065614 0.013668 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_14">
+      <origin
+        xyz="0.068212 0.007805 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_15">
+      <origin
+        xyz="0.068318 0.00145 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_16">
+      <origin
+        xyz="0.068068 -0.00498 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_17">
+      <origin
+        xyz="0.066232 -0.011112 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_18">
+      <origin
+        xyz="0.062486 -0.016327 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_19">
+      <origin
+        xyz="0.057632 -0.020542 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_20">
+      <origin
+        xyz="0.05203 -0.023703 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_21">
+      <origin
+        xyz="0.045994 -0.025938 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_22">
+      <origin
+        xyz="0.039715 -0.027353 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_23">
+      <origin
+        xyz="0.033315 -0.028064 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_24">
+      <origin
+        xyz="0.026869 -0.028067 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_25">
+      <origin
+        xyz="0.020423 -0.028003 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_26">
+      <origin
+        xyz="0.013976 -0.02794 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_27">
+      <origin
+        xyz="0.00753 -0.027876 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_28">
+      <origin
+        xyz="0.001083 -0.027812 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_29">
+      <origin
+        xyz="-0.005363 -0.027748 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_30">
+      <origin
+        xyz="-0.006523 -0.022502 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_31">
+      <origin
+        xyz="-0.006459 -0.016055 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_32">
+      <origin
+        xyz="-0.006395 -0.009609 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_33">
+      <origin
+        xyz="-0.006332 -0.003163 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_34">
+      <origin
+        xyz="-0.006268 0.003284 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_35">
+      <origin
+        xyz="-0.006204 0.00973 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+    <collision name="right_up_edge_cyl_36">
+      <origin
+        xyz="-0.00614 0.016177 -0.0265"
+        rpy="0 0 0" />
+      <geometry>
+        <cylinder
+          radius="0.0035"
+          length="0.07" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right_revolute_joint"
+    type="revolute">
+    <origin
+      xyz="0.0771500180422299 0.00800000079521957 0.047400004439432"
+      rpy="0 0 0" />
+    <parent
+      link="right_slide_link" />
+    <child
+      link="right_up_link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="0"
+      upper="0.34906585"
+      effort="20"
+      velocity="1.0" />
+  </joint>
+  <link
+    name="right_tof_link">
+    <inertial>
+      <origin
+        xyz="0.00267358286134627 -0.00744917038571721 0.00936615969535126"
+        rpy="0 0 0" />
+      <mass
+        value="0.00447925237497329" />
+      <inertia
+        ixx="1.3209294231881E-06"
+        ixy="1.83847193932212E-07"
+        ixz="-1.56759906412939E-08"
+        iyy="1.13759901967223E-06"
+        iyz="-4.61107563561529E-08"
+        izz="5.23425042640081E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/right_tof_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+  </link>
+  <joint
+    name="right_tof_joint"
+    type="fixed">
+    <origin
+      xyz="0.043847 -0.0014453 0.0088971"
+      rpy="0 0 0.15853" />
+    <parent
+      link="right_down_link" />
+    <child
+      link="right_tof_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="left_tof_link">
+    <inertial>
+      <origin
+        xyz="0.00241934431202585 0.00748274533332671 0.00929272135387826"
+        rpy="0 0 0" />
+      <mass
+        value="0.00461538486875448" />
+      <inertia
+        ixx="1.3338688464154E-06"
+        ixy="-1.82574149170442E-07"
+        ixz="-2.01367232011875E-08"
+        iyy="1.15318658184316E-06"
+        iyz="4.65703518935537E-08"
+        izz="5.40537937381318E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/left_tof_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+  </link>
+  <joint
+    name="left_tof_joint"
+    type="fixed">
+    <origin
+      xyz="-0.0089232 -0.04342 -0.0093645"
+      rpy="0 0 -0.15853" />
+    <parent
+      link="left_down_link" />
+    <child
+      link="left_tof_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="mid_camera_link">
+    <inertial>
+      <origin
+        xyz="-0.0105602157914801 0.0113031674475455 -0.00731343818097413"
+        rpy="0 0 0" />
+      <mass
+        value="0.00947596575611676" />
+      <inertia
+        ixx="1.71569322692862E-06"
+        ixy="3.55047599714173E-08"
+        ixz="-6.51400991146062E-08"
+        iyy="1.44255088121687E-06"
+        iyz="4.72774348518839E-07"
+        izz="1.49786117569519E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="meshes/mid_camera_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.101960784313725 0.101960784313725 0.101960784313725 1" />
+      </material>
+    </visual>
+  </link>
+  <joint
+    name="mid_camera_link_fixed_joint"
+    type="fixed">
+    <origin
+      xyz="-0.0295 -0.0721 0.055767"
+      rpy="0 0 0" />
+    <parent
+      link="left_down_link" />
+    <child
+      link="mid_camera_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <!-- Rotor visuals copied from the deployed Flygripper description.  These
+       are fixed at the neutral rotor joint poses for the Foxglove asset
+       viewer; aerodynamic rotation is not part of the visual model. -->
+  <link name="left_down_rotor_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/left_down_rotor_link.STL" /></geometry>
+      <material name="left_down_rotor"><color rgba="1 0.6 0.8 0.9" /></material>
+    </visual>
+  </link>
+  <joint name="left_down_rotor_joint" type="fixed">
+    <origin xyz="-0.053726761534320 0.001931713408243 -0.036924590356648" rpy="0 0 0" />
+    <parent link="left_down_link" />
+    <child link="left_down_rotor_link" />
+  </joint>
+  <link name="left_up_rotor_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/left_up_rotor_link.STL" /></geometry>
+      <material name="left_up_rotor"><color rgba="1 0.6 0.8 0.9" /></material>
+    </visual>
+  </link>
+  <joint name="left_up_rotor_joint" type="fixed">
+    <origin xyz="0.033904790386364 0.022383990776397 -0.085355132818222" rpy="0 0 0" />
+    <parent link="left_up_link" />
+    <child link="left_up_rotor_link" />
+  </joint>
+  <link name="right_down_rotor_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/right_down_rotor_link.STL" /></geometry>
+      <material name="right_down_rotor"><color rgba="1 0.6 0.8 0.9" /></material>
+    </visual>
+  </link>
+  <joint name="right_down_rotor_joint" type="fixed">
+    <origin xyz="-0.000956238465680 -0.054365607588808 -0.025624179281294" rpy="0 0 0" />
+    <parent link="right_down_link" />
+    <child link="right_down_rotor_link" />
+  </joint>
+  <link name="right_up_rotor_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/right_up_rotor_link.STL" /></geometry>
+      <material name="right_up_rotor"><color rgba="1 0.6 0.8 0.9" /></material>
+    </visual>
+  </link>
+  <joint name="right_up_rotor_joint" type="fixed">
+    <origin xyz="0.032574802643997 -0.022498037104266 -0.078354706987739" rpy="0 0 0" />
+    <parent link="right_up_link" />
+    <child link="right_up_rotor_link" />
+  </joint>
+</robot>
