@@ -22,6 +22,7 @@ from . import planner
 
 
 class FlyingHandBaseTask(gym.Env):
+    flying_hand_carry_modes = {"set_actor_pose", "physical", "isolated_set_actor_pose"}
     board_width = 0.73
     board_height = 1.65
     board_thickness = 0.02
@@ -50,7 +51,7 @@ class FlyingHandBaseTask(gym.Env):
     vertical_object_qpos = [0.70710678, 0.70710678, 0.0, 0.0]
     initial_to_pre_grasp_seconds = 2.0
     pre_grasp_to_grasp_seconds = 1.6
-    grasp_hold_seconds = 1.0
+    grasp_hold_seconds = 0.8
     grasp_to_pull_out_seconds = 1.3
     pull_out_to_place_seconds = 2.1
     release_to_retreat_seconds = pre_grasp_to_grasp_seconds
@@ -82,6 +83,10 @@ class FlyingHandBaseTask(gym.Env):
     def setup_demo(self, **kwags):
         self._init_flying_hand_task_env_(**kwags)
 
+    def _get_isolated_carry_exclusions(self, actor):
+        """Return scene entities to disable while an actor is carried in isolation."""
+        return ()
+
     def _init_flying_hand_task_env_(self, table_xy_bias=[0, 0], table_height_bias=0, **kwags):
         super().__init__()
         np.random.seed(kwags.get("seed", 0))
@@ -100,6 +105,18 @@ class FlyingHandBaseTask(gym.Env):
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
         self.save_freq = kwags.get("save_freq", 15)
         self.enable_dynamics = kwags.get("enable_dynamics", False)
+        self.flying_hand_carry_mode = kwags.get("flying_hand_carry_mode", "set_actor_pose")
+        if self.flying_hand_carry_mode not in self.flying_hand_carry_modes:
+            raise ValueError(
+                f"Unsupported flying_hand_carry_mode {self.flying_hand_carry_mode!r}; "
+                f"expected one of {sorted(self.flying_hand_carry_modes)}"
+            )
+        self.post_grasp_settle_seconds = float(kwags.get("post_grasp_settle_seconds", 0.0))
+        if self.post_grasp_settle_seconds < 0:
+            raise ValueError("post_grasp_settle_seconds must be non-negative")
+        self._flying_hand_grasp_needs_settle = False
+        self._flying_hand_carrying = False
+        self._isolated_carried_actor_state = None
         self.flying_hand_config = self._load_flying_hand_config()
         self._apply_flying_hand_config()
         self.plan_success = True
@@ -643,6 +660,7 @@ class FlyingHandBaseTask(gym.Env):
         qpos = np.array(qpos, dtype=float)
         if is_grasp is not None:
             self.is_grasping = bool(is_grasp)
+            self._flying_hand_grasp_needs_settle = self.is_grasping
             self.flying_hand_gripper_start_qpos = self.flying_hand.get_qpos()[self.flying_hand_gripper_joint_indices].copy()
             self.flying_hand_gripper_step = 0
             self.flying_hand_gripper_steps = self._seconds_to_steps(self.grasp_hold_seconds if self.is_grasping else self.release_hold_seconds)

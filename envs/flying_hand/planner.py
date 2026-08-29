@@ -2,6 +2,14 @@ import numpy as np
 import sapien
 
 
+def _dynamic_components(actor):
+    return [
+        component
+        for component in actor.actor.components
+        if isinstance(component, sapien.physx.PhysxRigidDynamicComponent)
+    ]
+
+
 def set_pose(env, pose, vel=None):
     env.flying_hand_ref_pose = pose
     env.flying_hand.set_root_pose(pose)
@@ -18,6 +26,75 @@ def set_actor_pose(actor, pose, vel=None):
             component.set_entity_pose(pose)
             component.set_linear_velocity(vel)
             component.set_angular_velocity([0, 0, 0])
+
+
+def _begin_isolated_carry(env, actor):
+    """Temporarily remove a scripted carried actor from PhysX simulation."""
+    state = env._isolated_carried_actor_state
+    if state is not None:
+        if state["actor"] is actor:
+            return
+        raise RuntimeError("An isolated carried actor is already active")
+
+    components = _dynamic_components(actor)
+    if not components:
+        raise ValueError(f"Carried actor {actor.get_name()!r} has no dynamic component")
+    excluded_components = []
+    for entity in env._get_isolated_carry_exclusions(actor):
+        for component in entity.components:
+            if isinstance(
+                component,
+                (
+                    sapien.physx.PhysxRigidDynamicComponent,
+                    sapien.physx.PhysxRigidStaticComponent,
+                ),
+            ):
+                excluded_components.append((component, bool(component.is_enabled)))
+
+    env._isolated_carried_actor_state = {
+        "actor": actor,
+        "components": components,
+        "enabled": [bool(component.is_enabled) for component in components],
+        "excluded_components": excluded_components,
+    }
+    for component in components:
+        component.disable()
+    for component, _ in excluded_components:
+        component.disable()
+
+
+def _set_isolated_actor_pose(actor, pose):
+    actor.actor.set_pose(pose)
+    for component in _dynamic_components(actor):
+        component.set_entity_pose(pose)
+
+
+def set_isolated_carried_actor_target(env, actor, pose):
+    """Set an isolated actor to an exact scripted endpoint before release."""
+    state = env._isolated_carried_actor_state
+    if state is None or state["actor"] is not actor:
+        raise RuntimeError("The requested actor is not the active isolated carried actor")
+    _set_isolated_actor_pose(actor, pose)
+
+
+def restore_isolated_carried_actor(env):
+    """Restore an isolated actor at its scripted pose with zero velocity."""
+    state = env._isolated_carried_actor_state
+    if state is None:
+        return
+
+    pose = state["actor"].get_pose()
+    for component, was_enabled in state["excluded_components"]:
+        if was_enabled:
+            component.enable()
+    for component, was_enabled in zip(state["components"], state["enabled"]):
+        component.set_entity_pose(pose)
+        component.set_linear_velocity([0, 0, 0])
+        component.set_angular_velocity([0, 0, 0])
+        if was_enabled:
+            component.enable()
+            component.wake_up()
+    env._isolated_carried_actor_state = None
 
 
 def step(env, n, save_freq=-1, carried_pose_fn=None):
@@ -50,7 +127,18 @@ def hold(env, pose, steps, save_freq=-1):
             env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
         else:
             set_pose(env, pose)
+        if (
+            not env.is_grasping
+            and env._isolated_carried_actor_state is not None
+            and env.flying_hand_gripper_step + 1 >= env.flying_hand_gripper_steps
+        ):
+            restore_isolated_carried_actor(env)
         step(env, 1, save_freq=save_freq)
+    if (
+        not env.is_grasping
+        and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps
+    ):
+        restore_isolated_carried_actor(env)
 
 
 def minco(points, times, vels=None, accs=None):
@@ -105,6 +193,16 @@ def slerp(q0, q1, t):
 
 
 def move_minco(env, poses, times=None, duration=None, steps=None, vels=None, accs=None, save_freq=-1, carried_actor=None, carried_pose=None):
+    carry_mode = env.flying_hand_carry_mode
+    if carried_actor is not None and carry_mode == "isolated_set_actor_pose":
+        _begin_isolated_carry(env, carried_actor)
+
+    if carried_actor is not None and env._flying_hand_grasp_needs_settle:
+        settle_steps = int(round(env.post_grasp_settle_seconds / env.sim_timestep))
+        if settle_steps > 0:
+            hold(env, poses[0], settle_steps, save_freq=save_freq)
+        env._flying_hand_grasp_needs_settle = False
+
     ps = np.array([pose.p for pose in poses], dtype=float)
     if times is None:
         duration = (steps or 80) * env.sim_timestep if duration is None else duration
@@ -114,30 +212,36 @@ def move_minco(env, poses, times=None, duration=None, steps=None, vels=None, acc
     carried_pose = carried_pose if carried_pose is not None else (
         poses[0].inv() * carried_actor.get_pose() if carried_actor is not None else None
     )
-    for coeff, T, start, end in zip(coeffs, times, poses[:-1], poses[1:]):
-        for idx in range(max(1, int(np.ceil(T / env.sim_timestep)))):
-            t = min((idx + 1) * env.sim_timestep, T)
-            p, v, a = sample(coeff, t)
-            ref_pose = sapien.Pose(p.tolist(), slerp(start.q, end.q, t / T).tolist())
-            env.flying_hand_ref_pose = ref_pose
-            if env.enable_dynamics:
-                hand_pose, hand_v = env.flying_hand_dynamics.step(
-                    ref_pose,
-                    v,
-                    a,
-                    env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
-                )
-                env.flying_hand.set_root_pose(hand_pose)
-                env.flying_hand.set_root_linear_velocity(hand_v.tolist())
-                env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
-            else:
-                hand_pose, hand_v = ref_pose, v
-                set_pose(env, hand_pose, hand_v)
-            carried_pose_fn = None
-            if carried_actor is not None:
-                actor_pose = hand_pose * carried_pose
-                carried_pose_fn = lambda actor=carried_actor, pose=actor_pose, vel=hand_v: (actor, pose, vel)
-            step(env, 1, save_freq=save_freq, carried_pose_fn=carried_pose_fn)
+    env._flying_hand_carrying = carried_actor is not None
+    try:
+        for coeff, T, start, end in zip(coeffs, times, poses[:-1], poses[1:]):
+            for idx in range(max(1, int(np.ceil(T / env.sim_timestep)))):
+                t = min((idx + 1) * env.sim_timestep, T)
+                p, v, a = sample(coeff, t)
+                ref_pose = sapien.Pose(p.tolist(), slerp(start.q, end.q, t / T).tolist())
+                env.flying_hand_ref_pose = ref_pose
+                if env.enable_dynamics:
+                    hand_pose, hand_v = env.flying_hand_dynamics.step(
+                        ref_pose,
+                        v,
+                        a,
+                        env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
+                    )
+                    env.flying_hand.set_root_pose(hand_pose)
+                    env.flying_hand.set_root_linear_velocity(hand_v.tolist())
+                    env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
+                else:
+                    hand_pose, hand_v = ref_pose, v
+                    set_pose(env, hand_pose, hand_v)
+                carried_pose_fn = None
+                if carried_actor is not None and carry_mode == "set_actor_pose":
+                    actor_pose = hand_pose * carried_pose
+                    carried_pose_fn = lambda actor=carried_actor, pose=actor_pose, vel=hand_v: (actor, pose, vel)
+                elif carried_actor is not None and carry_mode == "isolated_set_actor_pose":
+                    _set_isolated_actor_pose(carried_actor, hand_pose * carried_pose)
+                step(env, 1, save_freq=save_freq, carried_pose_fn=carried_pose_fn)
+    finally:
+        env._flying_hand_carrying = False
 
 
 def move_linear(env, start, end, duration=None, steps=None, save_freq=-1, carried_actor=None, carried_pose=None):

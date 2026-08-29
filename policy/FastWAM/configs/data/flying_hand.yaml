@@ -7,14 +7,14 @@ train:
     - ./data/flying_hand_lerobot/move_can_pot
     - ./data/flying_hand_lerobot/place_can_basket
     - ./data/flying_hand_lerobot/place_fruit_skillet
-    - ./data/flying_hand_lerobot/thread_tape_rod
+    - ./data/flying_hand_lerobot/thread_ring_rod
     - ./data/flying_hand_lerobot/shake_bottle
     - ./data/flying_hand_lerobot/stack_blocks_two
     - ./data/flying_hand_lerobot/stack_blocks_two_size
   shape_meta:
     images:
       - key: head_camera
-        raw_shape: [3, 376, 672]
+        raw_shape: [3, 360, 480]
         shape: [3, 192, 256]
       - key: wrist_camera
         raw_shape: [3, 480, 640]

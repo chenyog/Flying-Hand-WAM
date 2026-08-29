@@ -38,7 +38,7 @@ DEFAULT_TASKS = (
     "shake_bottle",
     "stack_blocks_two",
     "stack_blocks_two_size",
-    "thread_tape_rod",
+    "thread_ring_rod",
 )
 
 

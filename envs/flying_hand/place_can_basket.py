@@ -15,8 +15,19 @@ class place_can_basket(FlyingHandBaseTask):
     place_pre_z_offset = 0.26
     place_z_offset = 0.16
     grasp_to_place_seconds = 2.4
+    place_descent_seconds = 0.8
+    post_release_settle_seconds = 0.5
+    isolated_release_z_offset = 0.0
     can_qpos = [0.707225, 0.706849, -0.0100455, -0.00982061]
     basket_qpos = [0.5, 0.5, 0.5, 0.5]
+
+    def _get_isolated_carry_exclusions(self, actor):
+        # The can is scripted outside PhysX while carried. Disable the basket
+        # over the same interval; shelves remain active so randomized clutter
+        # continues to be supported by physics.
+        if actor is self.can:
+            return (self.basket.actor,)
+        return super()._get_isolated_carry_exclusions(actor)
 
     def load_actors(self):
         self._reset_board_slots()
@@ -45,6 +56,7 @@ class place_can_basket(FlyingHandBaseTask):
         place_pre = self._offset_y(self._get_flying_hand_pose(self.basket, self.pre_grasp_x_offset, self.place_pre_z_offset), self.open_gripper_y_offset)
         place = self._offset_y(self._get_flying_hand_pose(self.basket, self.grasp_x_offset + 0.04, self.place_z_offset), self.open_gripper_y_offset)
         place_pre = type(place_pre)([place_pre.p[0], place_pre.p[1], max(place_pre.p[2], can_pull.p[2])], place_pre.q)
+        place_approach = type(place)([place_pre.p[0], place_pre.p[1], place.p[2]], place.q)
 
         planner.move_minco(
             self,
@@ -54,16 +66,41 @@ class place_can_basket(FlyingHandBaseTask):
         )
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
         planner.hold(self, can_grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
+        carried_pose = self.flying_hand.get_root_pose().inv() * self.can.get_pose()
         planner.move_minco(
             self,
-            [can_grasp, can_pull, place_pre, place],
-            times=[self.grasp_to_pull_out_seconds, self.grasp_to_place_seconds, self.pre_grasp_to_grasp_seconds],
+            [can_grasp, can_pull, place_pre, place_approach, place],
+            times=[
+                self.grasp_to_pull_out_seconds,
+                self.grasp_to_place_seconds,
+                self.place_descent_seconds,
+                self.pre_grasp_to_grasp_seconds,
+            ],
             save_freq=save_freq,
             carried_actor=self.can,
-            carried_pose=self.flying_hand.get_root_pose().inv() * self.can.get_pose(),
+            carried_pose=carried_pose,
         )
+        if self.flying_hand_carry_mode == "isolated_set_actor_pose":
+            isolated_target = place * carried_pose
+            isolated_target = type(isolated_target)(
+                (np.asarray(isolated_target.p) + [0.0, 0.0, self.isolated_release_z_offset]).tolist(),
+                isolated_target.q,
+            )
+            planner.set_isolated_carried_actor_target(self, self.can, isolated_target)
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
         planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
+        planner.move_minco(
+            self,
+            [place, place_pre],
+            times=[self.pre_grasp_to_grasp_seconds],
+            save_freq=save_freq,
+        )
+        planner.hold(
+            self,
+            place_pre,
+            self._seconds_to_steps(self.post_release_settle_seconds),
+            save_freq=save_freq,
+        )
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {
             "{A}": f"{self.can_name}/base{self.can_id}",
