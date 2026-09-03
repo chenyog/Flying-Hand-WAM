@@ -41,6 +41,70 @@ DEFAULT_TASKS = (
 )
 
 
+def _json_value(value):
+    """Convert NumPy scalar/array values in diagnostics to JSON values."""
+    if isinstance(value, np.ndarray):
+        return [_json_value(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _minco_planner_summary(plans):
+    """Build compact, aggregate MINCO diagnostics for one task execution."""
+    plans = _json_value(plans or [])
+
+    def number(mapping, key, default=0.0):
+        value = mapping.get(key, default)
+        return float(value) if value is not None else float(default)
+
+    def duration_total(plan, key):
+        values = plan.get(key, [])
+        if isinstance(values, (int, float)):
+            return float(values)
+        return sum(float(value) for value in (values or []))
+
+    def metric(plan, key):
+        return number(plan.get("metrics", {}), key)
+
+    optimization_failed_plans = [
+        plan for plan in plans if not bool(plan.get("success", False))
+    ]
+    reach_plans = [plan for plan in plans if "reach_succeeded" in plan]
+    reach_failed_plans = [
+        plan for plan in reach_plans if not bool(plan.get("reach_succeeded", False))
+    ]
+    failed_phase_names = list(dict.fromkeys(
+        [plan.get("phase") for plan in optimization_failed_plans + reach_failed_plans]
+    ))
+    return {
+        "phase_count": len(plans),
+        "total_initial_flight_time_s": sum(duration_total(plan, "initial_times") for plan in plans),
+        "total_optimized_flight_time_s": sum(metric(plan, "total_time_s") for plan in plans),
+        "total_iterations": sum(int(number(plan, "iterations")) for plan in plans),
+        "total_function_evaluations": sum(int(number(plan, "function_evaluations")) for plan in plans),
+        "any_failed": bool(failed_phase_names),
+        "failed_phase_count": len(failed_phase_names),
+        "failed_phases": failed_phase_names,
+        "optimizer_failed_phase_count": len(optimization_failed_plans),
+        "reach_checked_phase_count": len(reach_plans),
+        "reach_failed_phase_count": len(reach_failed_plans),
+        "max_start_position_error_m": max((number(plan, "start_position_error_m") for plan in plans), default=0.0),
+        "max_start_yaw_error_rad": max((number(plan, "start_yaw_error_rad") for plan in plans), default=0.0),
+        "max_reach_position_error_m": max((number(plan, "reach_position_error_m") for plan in reach_plans), default=0.0),
+        "max_reach_yaw_error_rad": max((number(plan, "reach_yaw_error_rad") for plan in reach_plans), default=0.0),
+        "total_reach_wait_time_s": sum(number(plan, "reach_wait_time_s") for plan in reach_plans),
+        "max_planned_velocity_mps": max((metric(plan, "max_velocity_mps") for plan in plans), default=0.0),
+        "max_planned_acceleration_mps2": max((metric(plan, "max_acceleration_mps2") for plan in plans), default=0.0),
+        "max_planned_yaw_rate_rad_s": max((metric(plan, "max_yaw_rate_rad_s") for plan in plans), default=0.0),
+        "max_planned_path_deviation_m": max((metric(plan, "max_path_deviation_m") for plan in plans), default=0.0),
+    }
+
+
 def _position(actor):
     return np.asarray(actor.get_pose().p, dtype=float)
 
@@ -493,14 +557,41 @@ def run_once(
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "carry_mode": carry_mode,
         "post_grasp_settle_seconds": post_grasp_settle_seconds,
+        "minco_plans": [],
+        "planner_summary": _minco_planner_summary([]),
+        "rod_physics": {},
     }
     task = None
     original_step = planner.step
     monitor = GraspMonitor()
     link_monitor = LinkJitterMonitor()
+    rod_physics = {
+        "source_rod": {"samples": 0, "disabled_samples": 0},
+        "target_rod": {"samples": 0, "disabled_samples": 0},
+    }
+
+    def sample_rod_physics():
+        if task is None:
+            return
+        for attribute, counts in rod_physics.items():
+            rod = getattr(task, attribute, None)
+            if rod is None:
+                continue
+            components = [
+                component
+                for component in rod.components
+                if hasattr(component, "is_enabled")
+            ]
+            if not components:
+                continue
+            counts["samples"] += 1
+            counts["disabled_samples"] += int(
+                any(not bool(component.is_enabled) for component in components)
+            )
 
     def monitored_step(env, n, save_freq=-1, carried_pose_fn=None):
         for _ in range(n):
+            sample_rod_physics()
             monitor.before_step(env)
             carrying = bool(getattr(env, "_flying_hand_carrying", False))
             link_monitor.before_step(env, carrying=carrying)
@@ -525,6 +616,11 @@ def run_once(
         link_monitor.finish(task)
         result["task_success"] = bool(task.check_success())
         result["task_failed_flag"] = bool(task.task_failed)
+        result["rod_physics"] = {
+            name: counts
+            for name, counts in rod_physics.items()
+            if counts["samples"] > 0
+        }
         result["events"] = []
         all_unstable = []
         all_review = []
@@ -565,6 +661,8 @@ def run_once(
     finally:
         planner.step = original_step
         if task is not None:
+            result["minco_plans"] = _json_value(getattr(task, "minco_plan_diagnostics", []))
+            result["planner_summary"] = _minco_planner_summary(result["minco_plans"])
             try:
                 task.close_env()
             except Exception as exc:

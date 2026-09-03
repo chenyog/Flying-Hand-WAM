@@ -75,22 +75,22 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         ])
 
     def _move_block(self, start, block, target_center, save_freq, retreat=None, last=False):
+        motion = planner.TaskMotionPlanner(self, save_freq)
+        phase_prefix = f"rank_{block.get_name().replace(' ', '_')}"
         pre = self._get_block_grasp_pose(block, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         grasp = self._get_block_grasp_pose(block, self.grasp_x_offset, self.grasp_z_offset)
         pull = self._get_block_grasp_pose(block, self.pull_out_x_offset, self.pull_out_z_offset)
 
-        planner.move_minco(
-            self,
+        motion.move(
             [start, pre, grasp] if retreat is None else [start, retreat, pre, grasp],
-            times=(
+            time_hints=(
                 [self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds]
                 if retreat is None
                 else [self.release_to_retreat_seconds, self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds]
             ),
-            save_freq=save_freq,
+            phase_name=f"{phase_prefix}_approach_grasp",
+            gripper_after_reach="close",
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
-        planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         carried_pose = self.flying_hand.get_root_pose().inv() * block.get_pose()
         place = sapien.Pose(target_center.tolist(), block.get_pose().q) * carried_pose.inv()
         place_pre = sapien.Pose((place.p + np.array([
@@ -98,24 +98,21 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
             0.0,
             self.place_pre_z_offset,
         ])).tolist(), place.q)
-        planner.move_minco(
-            self,
+        motion.move(
             [grasp, pull, place_pre, place],
-            times=[self.grasp_to_pull_out_seconds, self.pull_out_to_place_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.grasp_to_pull_out_seconds, self.pull_out_to_place_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name=f"{phase_prefix}_carry_place",
             carried_actor=block,
             carried_pose=carried_pose,
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
-        planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
+        motion.set_gripper(place, "open")
         release_lift = np.array([0.0, 0.0, self.release_retreat_z_offset])
         place_up = sapien.Pose((place.p + release_lift).tolist(), place.q)
         place_pre_up = sapien.Pose((place_pre.p + release_lift).tolist(), place_pre.q)
-        planner.move_minco(
-            self,
+        motion.move(
             [place, place_up, place_pre_up],
-            times=[self.release_lift_seconds, self.release_to_retreat_seconds],
-            save_freq=save_freq,
+            time_hints=[self.release_lift_seconds, self.release_to_retreat_seconds],
+            phase_name=f"{phase_prefix}_release_retreat",
         )
         return place_pre_up, None
 

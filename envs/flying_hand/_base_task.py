@@ -111,13 +111,28 @@ class FlyingHandBaseTask(gym.Env):
                 f"Unsupported flying_hand_carry_mode {self.flying_hand_carry_mode!r}; "
                 f"expected one of {sorted(self.flying_hand_carry_modes)}"
             )
-        self.post_grasp_settle_seconds = float(kwags.get("post_grasp_settle_seconds", 0.0))
+        self.flying_hand_config = self._load_flying_hand_config()
+        self.post_grasp_settle_seconds = float(
+            kwags.get(
+                "post_grasp_settle_seconds",
+                self.flying_hand_config["post_grasp_settle_seconds"],
+            )
+        )
         if self.post_grasp_settle_seconds < 0:
             raise ValueError("post_grasp_settle_seconds must be non-negative")
+        self.minco_optimization_config = planner.MincoOptimizationConfig.from_mapping(
+            self.flying_hand_config["minco_optimization"]
+        )
+        self.minco_time_optimizer = planner.MincoTimeOptimizer(
+            self.minco_optimization_config
+        )
+        self.goal_grasp_planner_config = planner.GoalGraspPlannerConfig.from_mapping(
+            self.flying_hand_config["goal_grasp_planner"]
+        )
+        self.minco_plan_diagnostics = []
         self._flying_hand_grasp_needs_settle = False
         self._flying_hand_carrying = False
         self._isolated_carried_actor_state = None
-        self.flying_hand_config = self._load_flying_hand_config()
         self._apply_flying_hand_config()
         self.plan_success = True
         self.step_lim = None
@@ -255,7 +270,19 @@ class FlyingHandBaseTask(gym.Env):
 
     def _load_flying_hand_config(self):
         with open(self.flying_hand_asset_dir / "config.yml", "r", encoding="utf-8") as f:
-            return yaml.load(f.read(), Loader=yaml.FullLoader)
+            config = yaml.safe_load(f)
+        with open(Path(__file__).with_name("_base_config.yml"), "r", encoding="utf-8") as f:
+            control_config = yaml.safe_load(f)
+
+        def merge(target, update):
+            for key, value in update.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    merge(target[key], value)
+                else:
+                    target[key] = deepcopy(value)
+
+        merge(config, control_config)
+        return config
 
     def _apply_flying_hand_config(self):
         material_config = self.flying_hand_config["materials"]
@@ -722,6 +749,7 @@ class FlyingHandBaseTask(gym.Env):
     def reset_flying_hand_trajectory(self):
         self.flying_hand_target_state_path = []
         self.flying_hand_actual_state_path = []
+        self.minco_plan_diagnostics = []
         self.record_flying_hand_trajectory = True
 
     def get_obs(self):
@@ -798,6 +826,7 @@ class FlyingHandBaseTask(gym.Env):
             "right_joint_path": deepcopy(self.right_joint_path),
             "flying_hand_target_state": np.array(self.flying_hand_target_state_path, dtype=np.float32),
             "flying_hand_actual_state": np.array(self.flying_hand_actual_state_path, dtype=np.float32),
+            "minco_plan_diagnostics": deepcopy(self.minco_plan_diagnostics),
         })
 
     def load_tran_data(self, idx):

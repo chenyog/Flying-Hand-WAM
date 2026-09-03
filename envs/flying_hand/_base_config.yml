@@ -1,0 +1,123 @@
+post_grasp_settle_seconds: 0.3
+
+# Match goal_grasp.cpp reach gating. Gripper commands are issued only after
+# the simulated odometry reaches the requested position and yaw.
+goal_grasp_planner:
+  position_tolerance: 0.05
+  yaw_tolerance: 0.1
+  reach_timeout_seconds: 3.0
+
+# Task waypoints stay fixed. MINCO optimizes every positive segment duration.
+# The path-deviation penalty is simulation-specific: it keeps each polynomial
+# piece inside a narrow corridor around its waypoint chord and prevents large
+# spatial bows between collision-clear waypoints.
+minco_optimization:
+  enabled: true
+  segment_per_distance: 0.5
+  # Insert at least one interpolated pose between every pair of task-defined
+  # key waypoints. Longer legs still receive more pieces according to
+  # segment_per_distance.
+  min_piece_num_per_key_segment: 2
+  min_piece_num: 2
+  plan_max_vel: 0.6
+  plan_max_acc: 0.8
+  plan_max_dyaw: 0.5
+  # Use a 27 mm optimizer bound so finite sampling/numerical tolerance keeps
+  # the observed trajectory within an approximately 30 mm spatial corridor.
+  plan_max_path_deviation: 0.027
+  K: 8
+  rhoT: 10.0
+  rhoV: 1000.0
+  rhoA: 1000.0
+  rhoDYaw: 1000.0
+  rhoYawAlignmentAngle: 1000.0
+  rhoPathDeviation: 100000.0
+  max_iteration: 300
+
+inertial:
+  # Preserve the URDF mass distribution while matching the controller mass.
+  target_mass: 0.8
+  scale_inertia_with_mass: true
+  # These visual-only URDF links have no <inertial>. Keep them numerically
+  # valid without treating SAPIEN's fallback inertia as measured data.
+  unmodeled_links:
+    names:
+    - "left_down_rotor_link"
+    - "left_up_rotor_link"
+    - "right_down_rotor_link"
+    - "right_up_rotor_link"
+    mass: 1.0e-6
+    inertia: [1.0e-9, 1.0e-9, 2.0e-9]
+
+root:
+  qpos: [1.0, 0.0, 0.0, 0.0]
+  u_center_offset: [-0.13, -0.058, -0.005]
+
+gripper:
+  joint_control_mode: drive
+  disable_self_collision: true
+  close_prismatic_stage_ratio: 0.35
+  close_prismatic_hold_ratio: 0.10
+  close_prismatic_qpos_ratio: 0.35
+  drive:
+    revolute:
+      stiffness: 10.0
+      damping: 1.0
+      force_limit: 0.15
+      friction: 0.0
+    prismatic:
+      stiffness: 100.0
+      damping: 8.0
+      force_limit: 1.0
+      friction: 0.0
+  joint_names:
+  - "left_revolute_joint"
+  - "left_prismatic_joint"
+  - "down_left_prismatic_joint"
+  - "down_right_prismatic_joint"
+  - "right_prismatic_joint"
+  - "right_revolute_joint"
+  open_qpos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  close_qpos: [-0.34906585, 0.045, 0.0, 0.035, -0.045, 0.34906585]
+
+dynamics:
+  nominal:
+    mass: 0.8
+    # Fixed controller inertia: diagonal of the SAPIEN composite inertia at
+    # gripper.open_qpos after the URDF distribution is scaled to 0.8 kg.
+    inertia: [0.00347739056, 0.00398937023, 0.00696294292]
+  rotor:
+    thrust_coeff: 7.19543e-9
+    moment_coeff: 1.12968e-10
+  free:
+    rotor_position:
+    - [0.07424621202458748, -0.07424621202458748]
+    - [-0.07424621202458748, 0.07424621202458748]
+    - [0.07424621202458748, 0.07424621202458748]
+    - [-0.07424621202458748, -0.07424621202458748]
+  grasped:
+    rotor_position:
+    - [0.06010407640085654, -0.06010407640085654]
+    - [-0.06010407640085654, 0.06010407640085654]
+    - [0.06010407640085654, 0.06010407640085654]
+    - [-0.06010407640085654, -0.06010407640085654]
+  limits:
+    rotor_thrusts_min: [0.2374948, 0.2374948, 0.2374948, 0.2374948]
+    rotor_thrusts_max: [2.374948, 2.374948, 2.374948, 2.374948]
+    tilt_angle_max: 0.9
+    bodyrates_max: [6.0, 6.0, 3.0]
+  control:
+    k_pos: [5.5, 5.5, 5.0]
+    k_vel: [6.0, 6.0, 5.5]
+    k_att: [45.0, 45.0, 8.0]
+    k_omega: [12.0, 12.0, 7.0]
+  estimator:
+    enabled: true
+    as_v: -5.0
+    # Keep angular L1 compensation below grasped-flight torque authority.
+    as_omega: -3.0
+    thrust_cutoff: 30.0
+    torque_cutoff1: 2.0
+    torque_cutoff2: 6.0
+    force_bound: [3.0, 3.0, 3.0]
+    torque_bound: [0.01, 0.01, 0.002]

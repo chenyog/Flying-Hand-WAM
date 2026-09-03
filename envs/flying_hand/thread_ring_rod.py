@@ -19,14 +19,22 @@ class thread_ring_rod(FlyingHandBaseTask):
     rod_radius = 0.014
     rod_half_length = 0.18
     rod_y_offset = 0.18
-    initial_thread_x_offset = -0.06
+    # Keep the ring close to the negative-X rod tip. This exposes its front
+    # face to the gripper and leaves the rod body behind the grasp plane.
+    initial_thread_x_offset = -0.14
     thread_start_clearance = 0.05
     thread_insert_depth = 0.02
-    pre_grasp_x_offset = -0.55
+    approach_high_x_offset = -0.70
+    approach_high_z_offset = 0.28
+    pre_grasp_x_offset = -0.42
+    pre_grasp_z_offset = 0.16
+    front_align_x_offset = -0.24
+    front_align_z_offset = 0.09
     grasp_x_offset = -0.13
     pull_out_x_offset = -0.52
-    pre_grasp_z_offset = 0.10
-    grasp_z_offset = 0.04
+    # Grasp the upper band of the hanging ring without intersecting the source
+    # rod.  Lower values caused a rod/link impact; >= 0.07 m missed the ring.
+    grasp_z_offset = 0.06
     pull_out_z_offset = 0.24
     place_z_offset = 0.0
     place_pre_z_offset = 0.30
@@ -34,14 +42,6 @@ class thread_ring_rod(FlyingHandBaseTask):
     thread_align_seconds = 1.0
     thread_insert_seconds = 1.4
     thread_exit_seconds = 1.0
-
-    def _get_isolated_carry_exclusions(self, actor):
-        # The scripted ring is already outside PhysX while carried. Keeping
-        # either rod active would let the rods push the hand while the ring
-        # passes through them, recreating the link jitter this mode avoids.
-        if actor is self.ring:
-            return self.source_rod, self.target_rod
-        return super()._get_isolated_carry_exclusions(actor)
 
     def _build_ring_render_mesh(self):
         vertices = []
@@ -188,8 +188,15 @@ class thread_ring_rod(FlyingHandBaseTask):
         source_y = shelf_y - self.rod_y_offset
         self.source_rod_center = np.array([x, source_y, shelf_z + self.ring_outer_radius])
         self.source_rod = self._create_black_rod("source black rod", self.source_rod_center)
+        # A ring around a horizontal rod hangs at the internal-tangent pose;
+        # spawning both centers concentrically leaves a 14 mm gravitational
+        # drop that is released as a sharp impact during the first contact.
+        hanging_offset_z = -(self.ring_inner_radius - self.rod_radius)
         self.ring = self._create_ring(
-            sapien.Pose(self.source_rod_center + np.array([self.initial_thread_x_offset, 0.0, 0.0]))
+            sapien.Pose(
+                self.source_rod_center
+                + np.array([self.initial_thread_x_offset, 0.0, hanging_offset_z])
+            )
         )
 
         target_y = shelf_y + self.rod_y_offset
@@ -210,51 +217,107 @@ class thread_ring_rod(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
+        motion = planner.TaskMotionPlanner(self, save_freq)
+        approach_high = self._get_flying_hand_pose(
+            self.ring,
+            self.approach_high_x_offset,
+            self.approach_high_z_offset,
+        )
         pre = self._get_flying_hand_pose(self.ring, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
+        front_align = self._get_flying_hand_pose(
+            self.ring,
+            self.front_align_x_offset,
+            self.front_align_z_offset,
+        )
         grasp = self._get_flying_hand_pose(self.ring, self.grasp_x_offset, self.grasp_z_offset)
+        source_exit = self._get_flying_hand_pose(
+            self.ring,
+            self.front_align_x_offset,
+            self.front_align_z_offset,
+        )
         pull = self._get_flying_hand_pose(self.ring, self.pull_out_x_offset, self.pull_out_z_offset)
 
-        planner.move_minco(
-            self,
-            [self.flying_hand_initial_pose, pre, grasp],
-            times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+        motion.move(
+            [self.flying_hand_initial_pose, approach_high, pre, front_align, grasp],
+            time_hints=[
+                self.initial_to_pre_grasp_seconds,
+                1.2,
+                1.0,
+                self.pre_grasp_to_grasp_seconds,
+            ],
+            phase_name="ring_approach_grasp",
+            gripper_after_reach="close",
+            constrain_path_deviation=True,
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
-        planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         carried_pose = self.flying_hand.get_root_pose().inv() * self.ring.get_pose()
         ring_q = self.ring.get_pose().q
         thread_start_x = -self.rod_half_length - self.ring_half_length - self.thread_start_clearance
         thread_start_center = self.target_rod_center + np.array([thread_start_x, 0.0, self.place_z_offset])
         thread_pre_center = thread_start_center + np.array([0.0, 0.0, self.place_pre_z_offset])
+        transfer_mid_center = np.array([
+            thread_start_center[0],
+            0.5 * (self.source_rod_center[1] + self.target_rod_center[1]),
+            thread_pre_center[2],
+        ])
+        source_clear_center = np.array([
+            thread_start_center[0],
+            self.source_rod_center[1],
+            thread_pre_center[2],
+        ])
+        thread_align_center = thread_start_center + np.array([0.0, 0.0, 0.12])
+        thread_entry_x = -self.rod_half_length - self.ring_half_length - 0.015
+        thread_entry_center = self.target_rod_center + np.array([
+            thread_entry_x,
+            0.0,
+            self.place_z_offset,
+        ])
         thread_end_center = self.target_ring_center + np.array([0.0, 0.0, self.place_z_offset])
+        source_clear = self._pose_for_carried_ring_center(source_clear_center, ring_q, carried_pose)
+        transfer_mid = self._pose_for_carried_ring_center(transfer_mid_center, ring_q, carried_pose)
         thread_pre = self._pose_for_carried_ring_center(thread_pre_center, ring_q, carried_pose)
+        thread_align = self._pose_for_carried_ring_center(thread_align_center, ring_q, carried_pose)
         thread_start = self._pose_for_carried_ring_center(thread_start_center, ring_q, carried_pose)
+        thread_entry = self._pose_for_carried_ring_center(thread_entry_center, ring_q, carried_pose)
         place = self._pose_for_carried_ring_center(thread_end_center, ring_q, carried_pose)
-        planner.move_minco(
-            self,
-            [grasp, pull, thread_pre, thread_start, place],
-            times=[
+        motion.move(
+            [
+                grasp,
+                source_exit,
+                pull,
+                source_clear,
+                transfer_mid,
+                thread_pre,
+                thread_align,
+                thread_start,
+                thread_entry,
+                place,
+            ],
+            time_hints=[
+                0.8,
                 self.grasp_to_pull_out_seconds,
-                self.grasp_to_place_seconds,
+                1.0,
+                1.2,
+                1.0,
+                0.8,
                 self.thread_align_seconds,
+                0.8,
                 self.thread_insert_seconds,
             ],
-            save_freq=save_freq,
+            phase_name="ring_thread_target_rod",
             carried_actor=self.ring,
             carried_pose=carried_pose,
+            constrain_path_deviation=True,
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
-        planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
-        exit_lift_center = thread_end_center + np.array([0.0, 0.0, self.pull_out_z_offset])
-        exit_center = thread_start_center + np.array([0.0, 0.0, self.pull_out_z_offset])
+        motion.set_gripper(place, "open")
+        exit_lift_center = thread_start_center + np.array([0.0, 0.0, self.pull_out_z_offset])
+        exit_center = exit_lift_center + np.array([-0.25, 0.0, 0.0])
         exit_lift = self._pose_for_carried_ring_center(exit_lift_center, ring_q, carried_pose)
         exit_pose = self._pose_for_carried_ring_center(exit_center, ring_q, carried_pose)
-        planner.move_minco(
-            self,
-            [place, exit_lift, exit_pose],
-            times=[self.thread_exit_seconds, self.thread_exit_seconds],
-            save_freq=save_freq,
+        motion.move(
+            [place, thread_entry, thread_start, exit_lift, exit_pose],
+            time_hints=[0.8, 0.8, self.thread_exit_seconds, self.thread_exit_seconds],
+            phase_name="ring_exit_target_rod",
+            constrain_path_deviation=True,
         )
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {"{A}": "ring", "{B}": "target black rod"}

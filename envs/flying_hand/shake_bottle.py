@@ -36,6 +36,7 @@ class shake_bottle(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
+        motion = planner.TaskMotionPlanner(self, save_freq)
         pre = self._get_flying_hand_pose(self.bottle, self.pre_grasp_x_offset)
         grasp = self._get_flying_hand_pose(self.bottle, self.grasp_x_offset, self.grasp_z_offset)
         pull = self._get_flying_hand_pose(self.bottle, self.pull_out_x_offset, self.pull_out_z_offset)
@@ -44,19 +45,16 @@ class shake_bottle(FlyingHandBaseTask):
             path.extend([self._offset_y(pull, self.shake_y_offset), self._offset_y(pull, -self.shake_y_offset)])
         path.append(pull)
 
-        planner.move_minco(
-            self,
+        motion.move(
             [self.flying_hand_initial_pose, pre, grasp],
-            times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="bottle_approach_grasp",
+            gripper_after_reach="close",
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
-        planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
-        planner.move_minco(
-            self,
+        motion.move(
             path,
-            times=[self.grasp_to_pull_out_seconds] + [self.shake_seconds] * (len(path) - 2),
-            save_freq=save_freq,
+            time_hints=[self.grasp_to_pull_out_seconds] + [self.shake_seconds] * (len(path) - 2),
+            phase_name="bottle_shake_cycles",
             carried_actor=self.bottle,
             carried_pose=self.flying_hand.get_root_pose().inv() * self.bottle.get_pose(),
         )

@@ -50,6 +50,7 @@ class place_can_basket(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
+        motion = planner.TaskMotionPlanner(self, save_freq)
         can_pre = self._get_flying_hand_pose(self.can, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         can_grasp = self._get_flying_hand_pose(self.can, self.grasp_x_offset, self.grasp_z_offset)
         can_pull = self._get_flying_hand_pose(self.can, self.pull_out_x_offset, self.pull_out_z_offset)
@@ -58,25 +59,22 @@ class place_can_basket(FlyingHandBaseTask):
         place_pre = type(place_pre)([place_pre.p[0], place_pre.p[1], max(place_pre.p[2], can_pull.p[2])], place_pre.q)
         place_approach = type(place)([place_pre.p[0], place_pre.p[1], place.p[2]], place.q)
 
-        planner.move_minco(
-            self,
+        motion.move(
             [self.flying_hand_initial_pose, can_pre, can_grasp],
-            times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="can_approach_grasp",
+            gripper_after_reach="close",
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
-        planner.hold(self, can_grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
         carried_pose = self.flying_hand.get_root_pose().inv() * self.can.get_pose()
-        planner.move_minco(
-            self,
+        motion.move(
             [can_grasp, can_pull, place_pre, place_approach, place],
-            times=[
+            time_hints=[
                 self.grasp_to_pull_out_seconds,
                 self.grasp_to_place_seconds,
                 self.place_descent_seconds,
                 self.pre_grasp_to_grasp_seconds,
             ],
-            save_freq=save_freq,
+            phase_name="can_carry_to_basket",
             carried_actor=self.can,
             carried_pose=carried_pose,
         )
@@ -87,20 +85,13 @@ class place_can_basket(FlyingHandBaseTask):
                 isolated_target.q,
             )
             planner.set_isolated_carried_actor_target(self, self.can, isolated_target)
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
-        planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
-        planner.move_minco(
-            self,
+        motion.set_gripper(place, "open")
+        motion.move(
             [place, place_pre],
-            times=[self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.pre_grasp_to_grasp_seconds],
+            phase_name="can_release_retreat",
         )
-        planner.hold(
-            self,
-            place_pre,
-            self._seconds_to_steps(self.post_release_settle_seconds),
-            save_freq=save_freq,
-        )
+        motion.hold(place_pre, self.post_release_settle_seconds)
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {
             "{A}": f"{self.can_name}/base{self.can_id}",

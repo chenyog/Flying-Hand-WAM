@@ -30,3 +30,5 @@ envs/curobo/*
 
 /*.json*
 /*.txt
+
+tests/

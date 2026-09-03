@@ -94,31 +94,32 @@ class move_can_pot(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
+        motion = planner.TaskMotionPlanner(self, save_freq)
         can_pre = self._get_can_grasp_pose(self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         can_grasp = self._get_can_grasp_pose(self.grasp_x_offset, self.grasp_z_offset)
         can_pull = self._get_can_grasp_pose(self.pull_out_x_offset, self.pull_out_z_offset)
         place_pre = self._pose_from_center(self.target_center, self.pull_out_x_offset, self.pull_out_z_offset, self.grasp_y_offset)
         place = self._pose_from_center(self.target_center, self.grasp_x_offset, self.grasp_z_offset, self.grasp_y_offset)
 
-        planner.move_minco(
-            self,
+        motion.move(
             [self.flying_hand_initial_pose, can_pre, can_grasp],
-            times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="can_approach_grasp",
+            gripper_after_reach="close",
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["close_qpos"], is_grasp=True)
-        planner.hold(self, can_grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
-        planner.move_minco(
-            self,
+        motion.move(
             [can_grasp, can_pull, place_pre, place],
-            times=[self.grasp_to_pull_out_seconds, self.grasp_to_place_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.grasp_to_pull_out_seconds, self.grasp_to_place_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="can_carry_to_pot",
             carried_actor=self.can,
             carried_pose=self.flying_hand.get_root_pose().inv() * self.can.get_pose(),
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
-        planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
-        planner.move_minco(self, [place, place_pre], times=[self.pre_grasp_to_grasp_seconds], save_freq=save_freq)
+        motion.set_gripper(place, "open")
+        motion.move(
+            [place, place_pre],
+            time_hints=[self.pre_grasp_to_grasp_seconds],
+            phase_name="can_release_retreat",
+        )
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {
             "{A}": f"{self.pot_name}/base{self.pot_id}",

@@ -9,7 +9,6 @@ enable_dynamics: true
 # Scripted demonstrations move the carried object outside PhysX, then restore
 # it after the gripper opens. Use "physical" to evaluate contact-only grasping.
 flying_hand_carry_mode: isolated_set_actor_pose
-post_grasp_settle_seconds: 0.3
 embodiment: [flying-hand]
 language_num: 100
 domain_randomization:

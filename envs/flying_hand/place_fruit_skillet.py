@@ -35,6 +35,7 @@ class place_fruit_skillet(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
+        motion = planner.TaskMotionPlanner(self, save_freq)
         pre = self._get_flying_hand_pose(self.fruit, self.pre_grasp_x_offset, self.pre_grasp_z_offset)
         grasp = self._get_flying_hand_pose(self.fruit, self.grasp_x_offset, self.grasp_z_offset)
         pull = self._get_flying_hand_pose(self.fruit, self.pull_out_x_offset, self.pull_out_z_offset)
@@ -42,24 +43,21 @@ class place_fruit_skillet(FlyingHandBaseTask):
         place_pre = self._pose_from_center(target, self.pull_out_x_offset, self.place_pre_z_offset)
         place = self._pose_from_center(target, self.grasp_x_offset, self.place_z_offset)
 
-        planner.move_minco(
-            self,
+        motion.move(
             [self.flying_hand_initial_pose, pre, grasp],
-            times=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="fruit_approach_grasp",
+            gripper_after_reach="close",
+            gripper_qpos=(np.array(self.flying_hand_config["gripper"]["close_qpos"]) * self.close_qpos_scale).tolist(),
         )
-        self.set_flying_hand_gripper((np.array(self.flying_hand_config["gripper"]["close_qpos"]) * self.close_qpos_scale).tolist(), is_grasp=True)
-        planner.hold(self, grasp, self._seconds_to_steps(self.grasp_hold_seconds), save_freq=save_freq)
-        planner.move_minco(
-            self,
+        motion.move(
             [grasp, pull, place_pre, place],
-            times=[self.grasp_to_pull_out_seconds, self.grasp_to_place_seconds, self.pre_grasp_to_grasp_seconds],
-            save_freq=save_freq,
+            time_hints=[self.grasp_to_pull_out_seconds, self.grasp_to_place_seconds, self.pre_grasp_to_grasp_seconds],
+            phase_name="fruit_carry_to_skillet",
             carried_actor=self.fruit,
             carried_pose=self.flying_hand.get_root_pose().inv() * self.fruit.get_pose(),
         )
-        self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
-        planner.hold(self, place, self._seconds_to_steps(self.release_hold_seconds), save_freq=save_freq)
+        motion.set_gripper(place, "open")
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {
             "{A}": f"{self.skillet_name}/base{self.skillet_id}",
