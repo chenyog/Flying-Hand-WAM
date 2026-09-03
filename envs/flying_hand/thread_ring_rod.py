@@ -247,7 +247,6 @@ class thread_ring_rod(FlyingHandBaseTask):
             ],
             phase_name="ring_approach_grasp",
             gripper_after_reach="close",
-            constrain_path_deviation=True,
         )
         carried_pose = self.flying_hand.get_root_pose().inv() * self.ring.get_pose()
         ring_q = self.ring.get_pose().q
@@ -306,7 +305,6 @@ class thread_ring_rod(FlyingHandBaseTask):
             phase_name="ring_thread_target_rod",
             carried_actor=self.ring,
             carried_pose=carried_pose,
-            constrain_path_deviation=True,
         )
         motion.set_gripper(place, "open")
         exit_lift_center = thread_start_center + np.array([0.0, 0.0, self.pull_out_z_offset])
@@ -317,7 +315,6 @@ class thread_ring_rod(FlyingHandBaseTask):
             [place, thread_entry, thread_start, exit_lift, exit_pose],
             time_hints=[0.8, 0.8, self.thread_exit_seconds, self.thread_exit_seconds],
             phase_name="ring_exit_target_rod",
-            constrain_path_deviation=True,
         )
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {"{A}": "ring", "{B}": "target black rod"}

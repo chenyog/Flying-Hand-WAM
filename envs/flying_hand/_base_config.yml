@@ -1,5 +1,3 @@
-post_grasp_settle_seconds: 0.3
-
 # Match goal_grasp.cpp reach gating. Gripper commands are issued only after
 # the simulated odometry reaches the requested position and yaw.
 goal_grasp_planner:
@@ -8,30 +6,19 @@ goal_grasp_planner:
   reach_timeout_seconds: 3.0
 
 # Task waypoints stay fixed. MINCO optimizes every positive segment duration.
-# The path-deviation penalty is simulation-specific: it keeps each polynomial
-# piece inside a narrow corridor around its waypoint chord and prevents large
-# spatial bows between collision-clear waypoints.
 minco_optimization:
   enabled: true
   segment_per_distance: 0.5
-  # Insert at least one interpolated pose between every pair of task-defined
-  # key waypoints. Longer legs still receive more pieces according to
-  # segment_per_distance.
-  min_piece_num_per_key_segment: 2
   min_piece_num: 2
   plan_max_vel: 0.6
   plan_max_acc: 0.8
   plan_max_dyaw: 0.5
-  # Use a 27 mm optimizer bound so finite sampling/numerical tolerance keeps
-  # the observed trajectory within an approximately 30 mm spatial corridor.
-  plan_max_path_deviation: 0.027
   K: 8
   rhoT: 10.0
   rhoV: 1000.0
   rhoA: 1000.0
   rhoDYaw: 1000.0
   rhoYawAlignmentAngle: 1000.0
-  rhoPathDeviation: 100000.0
   max_iteration: 300
 
 inertial:
@@ -56,9 +43,6 @@ root:
 gripper:
   joint_control_mode: drive
   disable_self_collision: true
-  close_prismatic_stage_ratio: 0.35
-  close_prismatic_hold_ratio: 0.10
-  close_prismatic_qpos_ratio: 0.35
   drive:
     revolute:
       stiffness: 10.0

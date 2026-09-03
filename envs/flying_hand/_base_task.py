@@ -22,7 +22,6 @@ from . import planner
 
 
 class FlyingHandBaseTask(gym.Env):
-    flying_hand_carry_modes = {"set_actor_pose", "physical", "isolated_set_actor_pose"}
     board_width = 0.73
     board_height = 1.65
     board_thickness = 0.02
@@ -105,21 +104,7 @@ class FlyingHandBaseTask(gym.Env):
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
         self.save_freq = kwags.get("save_freq", 15)
         self.enable_dynamics = kwags.get("enable_dynamics", False)
-        self.flying_hand_carry_mode = kwags.get("flying_hand_carry_mode", "set_actor_pose")
-        if self.flying_hand_carry_mode not in self.flying_hand_carry_modes:
-            raise ValueError(
-                f"Unsupported flying_hand_carry_mode {self.flying_hand_carry_mode!r}; "
-                f"expected one of {sorted(self.flying_hand_carry_modes)}"
-            )
         self.flying_hand_config = self._load_flying_hand_config()
-        self.post_grasp_settle_seconds = float(
-            kwags.get(
-                "post_grasp_settle_seconds",
-                self.flying_hand_config["post_grasp_settle_seconds"],
-            )
-        )
-        if self.post_grasp_settle_seconds < 0:
-            raise ValueError("post_grasp_settle_seconds must be non-negative")
         self.minco_optimization_config = planner.MincoOptimizationConfig.from_mapping(
             self.flying_hand_config["minco_optimization"]
         )
@@ -130,9 +115,9 @@ class FlyingHandBaseTask(gym.Env):
             self.flying_hand_config["goal_grasp_planner"]
         )
         self.minco_plan_diagnostics = []
-        self._flying_hand_grasp_needs_settle = False
         self._flying_hand_carrying = False
         self._isolated_carried_actor_state = None
+        self._released_actor_collision_state = None
         self._apply_flying_hand_config()
         self.plan_success = True
         self.step_lim = None
@@ -558,11 +543,6 @@ class FlyingHandBaseTask(gym.Env):
         gripper_config = self.flying_hand_config["gripper"]
         self.flying_hand_gripper_joint_indices = [names.index(name) for name in gripper_config["joint_names"]]
         self.flying_hand_gripper_joints = [self.flying_hand_joints[name] for name in gripper_config["joint_names"]]
-        self.flying_hand_gripper_prismatic_indices = [idx for idx, name in enumerate(gripper_config["joint_names"]) if "prismatic" in name]
-        self.flying_hand_gripper_revolute_indices = [idx for idx, name in enumerate(gripper_config["joint_names"]) if "revolute" in name]
-        self.flying_hand_gripper_prismatic_stage_ratio = float(gripper_config["close_prismatic_stage_ratio"])
-        self.flying_hand_gripper_prismatic_hold_ratio = float(gripper_config["close_prismatic_hold_ratio"])
-        self.flying_hand_gripper_prismatic_qpos_ratio = float(gripper_config["close_prismatic_qpos_ratio"])
         self._configure_flying_hand_gripper_control(gripper_config)
         if gripper_config.get("disable_self_collision", True):
             self._disable_flying_hand_self_collision()
@@ -687,7 +667,11 @@ class FlyingHandBaseTask(gym.Env):
         qpos = np.array(qpos, dtype=float)
         if is_grasp is not None:
             self.is_grasping = bool(is_grasp)
-            self._flying_hand_grasp_needs_settle = self.is_grasping
+            if not self.is_grasping:
+                planner.restore_isolated_carried_actor(
+                    self,
+                    suppress_gripper_collisions=True,
+                )
             self.flying_hand_gripper_start_qpos = self.flying_hand.get_qpos()[self.flying_hand_gripper_joint_indices].copy()
             self.flying_hand_gripper_step = 0
             self.flying_hand_gripper_steps = self._seconds_to_steps(self.grasp_hold_seconds if self.is_grasping else self.release_hold_seconds)
@@ -703,23 +687,10 @@ class FlyingHandBaseTask(gym.Env):
         if self.flying_hand_gripper_step < self.flying_hand_gripper_steps:
             self.flying_hand_gripper_step += 1
             a = self.flying_hand_gripper_step / self.flying_hand_gripper_steps
-            if self.is_grasping:
-                qpos = self.flying_hand_gripper_start_qpos.copy()
-                diff = self.flying_hand_gripper_qpos - self.flying_hand_gripper_start_qpos
-                ids = self.flying_hand_gripper_prismatic_indices
-                r = self.flying_hand_gripper_prismatic_stage_ratio
-                h = self.flying_hand_gripper_prismatic_hold_ratio
-                if a < r - h:
-                    qpos[ids] += diff[ids] * self.flying_hand_gripper_prismatic_qpos_ratio * a / (r - h)
-                elif a < r:
-                    qpos[ids] += diff[ids] * self.flying_hand_gripper_prismatic_qpos_ratio
-                else:
-                    b = (a - r) / (1 - r)
-                    qpos[ids] += diff[ids] * (self.flying_hand_gripper_prismatic_qpos_ratio + (1 - self.flying_hand_gripper_prismatic_qpos_ratio) * b)
-                    ids = self.flying_hand_gripper_revolute_indices
-                    qpos[ids] += diff[ids] * b
-            else:
-                qpos = (1 - a) * self.flying_hand_gripper_start_qpos + a * self.flying_hand_gripper_qpos
+            qpos = (
+                (1 - a) * self.flying_hand_gripper_start_qpos
+                + a * self.flying_hand_gripper_qpos
+            )
         else:
             qpos = self.flying_hand_gripper_qpos
         if self.flying_hand_gripper_control_mode == "drive":

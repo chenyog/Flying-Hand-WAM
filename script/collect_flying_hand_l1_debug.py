@@ -84,6 +84,12 @@ def _minco_planner_summary(plans):
     ))
     return {
         "phase_count": len(plans),
+        "optimizer_backends": sorted({
+            str(plan.get("backend", "unknown")) for plan in plans
+        }),
+        "total_optimization_wall_time_s": sum(
+            number(plan, "optimization_wall_time_seconds") for plan in plans
+        ),
         "total_initial_flight_time_s": sum(duration_total(plan, "initial_times") for plan in plans),
         "total_optimized_flight_time_s": sum(metric(plan, "total_time_s") for plan in plans),
         "total_iterations": sum(int(number(plan, "iterations")) for plan in plans),
@@ -102,7 +108,6 @@ def _minco_planner_summary(plans):
         "max_planned_velocity_mps": max((metric(plan, "max_velocity_mps") for plan in plans), default=0.0),
         "max_planned_acceleration_mps2": max((metric(plan, "max_acceleration_mps2") for plan in plans), default=0.0),
         "max_planned_yaw_rate_rad_s": max((metric(plan, "max_yaw_rate_rad_s") for plan in plans), default=0.0),
-        "max_planned_path_deviation_m": max((metric(plan, "max_path_deviation_m") for plan in plans), default=0.0),
     }
 
 
@@ -229,9 +234,9 @@ def run_episode(task_name, task_config, seed, output_dir, dynamics_patch):
     recorder = L1TrajectoryRecorder()
     original_step = planner.step
 
-    def recorded_step(env, n, save_freq=-1, carried_pose_fn=None):
+    def recorded_step(env, n, save_freq=-1):
         for _ in range(n):
-            original_step(env, 1, save_freq=save_freq, carried_pose_fn=carried_pose_fn)
+            original_step(env, 1, save_freq=save_freq)
             recorder.sample(env)
 
     try:

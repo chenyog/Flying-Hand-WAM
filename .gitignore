@@ -2,6 +2,7 @@ models/
 data/*
 !data/process_stuck.py
 __pycache__/
+envs/flying_hand/_minco_cpp*.so
 **/checkpoints/
 result/
 envs/curobo

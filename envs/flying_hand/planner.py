@@ -2,7 +2,23 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 import sapien
-from scipy.optimize import minimize
+
+try:
+    from . import _minco_cpp
+except ImportError as error:
+    _minco_cpp = None
+    _MINCO_CPP_IMPORT_ERROR = error
+else:
+    _MINCO_CPP_IMPORT_ERROR = None
+
+
+def _require_minco_cpp():
+    if _minco_cpp is None:
+        raise RuntimeError(
+            "The Flying-Hand C++ MINCO module is not built. Run "
+            "`.venv/bin/python script/build_flying_hand_minco_cpp.py` "
+            "from the repository root."
+        ) from _MINCO_CPP_IMPORT_ERROR
 
 
 def _dynamic_components(actor):
@@ -13,6 +29,58 @@ def _dynamic_components(actor):
     ]
 
 
+def _collision_shapes(entity):
+    shapes = []
+    for component in entity.components:
+        get_collision_shapes = getattr(component, "get_collision_shapes", None)
+        if get_collision_shapes is not None:
+            shapes.extend(get_collision_shapes())
+    return shapes
+
+
+def restore_released_actor_collisions(env):
+    """Restore collisions between a released actor and the opened gripper."""
+    state = env._released_actor_collision_state
+    if state is None:
+        return
+    for shape, groups in state["collision_groups"]:
+        shape.set_collision_groups(groups)
+    env._released_actor_collision_state = None
+
+
+def _suppress_released_actor_gripper_collisions(env, actor):
+    """Keep release physical while an opening gripper still surrounds the actor."""
+    restore_released_actor_collisions(env)
+    hand_shapes = [
+        shape
+        for link in env.flying_hand.get_links()
+        for shape in link.get_collision_shapes()
+    ]
+    signatures = {
+        tuple(shape.get_collision_groups()[2:4])
+        for shape in hand_shapes
+    }
+    if len(signatures) != 1:
+        raise RuntimeError(
+            "Flying-hand collision shapes do not share one self-collision filter"
+        )
+    ignore_mask, filter_id = signatures.pop()
+    if ignore_mask == 0:
+        raise RuntimeError("Flying-hand self-collision filter is not configured")
+
+    collision_groups = []
+    for shape in _collision_shapes(actor.actor):
+        groups = shape.get_collision_groups()
+        collision_groups.append((shape, list(groups)))
+        groups[2] |= ignore_mask
+        groups[3] = filter_id
+        shape.set_collision_groups(groups)
+    env._released_actor_collision_state = {
+        "actor": actor,
+        "collision_groups": collision_groups,
+    }
+
+
 def set_pose(env, pose, vel=None):
     env.flying_hand_ref_pose = pose
     env.flying_hand.set_root_pose(pose)
@@ -21,18 +89,9 @@ def set_pose(env, pose, vel=None):
     env.flying_hand.set_root_angular_velocity([0, 0, 0])
 
 
-def set_actor_pose(actor, pose, vel=None):
-    actor.actor.set_pose(pose)
-    vel = (np.zeros(3) if vel is None else vel).tolist()
-    for component in actor.actor.components:
-        if isinstance(component, sapien.physx.PhysxRigidDynamicComponent):
-            component.set_entity_pose(pose)
-            component.set_linear_velocity(vel)
-            component.set_angular_velocity([0, 0, 0])
-
-
 def _begin_isolated_carry(env, actor):
     """Temporarily remove a scripted carried actor from PhysX simulation."""
+    restore_released_actor_collisions(env)
     state = env._isolated_carried_actor_state
     if state is not None:
         if state["actor"] is actor:
@@ -80,13 +139,20 @@ def set_isolated_carried_actor_target(env, actor, pose):
     _set_isolated_actor_pose(actor, pose)
 
 
-def restore_isolated_carried_actor(env):
-    """Restore an isolated actor at its scripted pose with zero velocity."""
+def restore_isolated_carried_actor(env, suppress_gripper_collisions=False):
+    """Restore an isolated actor at its scripted pose with zero velocity.
+
+    During release, the actor immediately rejoins PhysX so gravity and support
+    contacts take effect.  Its collision with the still-opening gripper can be
+    suppressed independently until the open command finishes.
+    """
     state = env._isolated_carried_actor_state
     if state is None:
         return
 
     pose = state["actor"].get_pose()
+    if suppress_gripper_collisions:
+        _suppress_released_actor_gripper_collisions(env, state["actor"])
     for component, was_enabled in state["excluded_components"]:
         if was_enabled:
             component.enable()
@@ -100,13 +166,16 @@ def restore_isolated_carried_actor(env):
     env._isolated_carried_actor_state = None
 
 
-def step(env, n, save_freq=-1, carried_pose_fn=None):
+def step(env, n, save_freq=-1):
     for _ in range(n):
         env.apply_flying_hand_gripper_qpos()
-        if carried_pose_fn is not None:
-            actor, pose, vel = carried_pose_fn()
-            set_actor_pose(actor, pose, vel)
         env.scene.step()
+        if (
+            env._released_actor_collision_state is not None
+            and not env.is_grasping
+            and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps
+        ):
+            restore_released_actor_collisions(env)
         env._task_objects_safe()
         env.flying_hand_save_step += 1
         if env.render_freq and env.flying_hand_save_step % env.render_freq == 0:
@@ -123,56 +192,23 @@ def hold(env, pose, steps, save_freq=-1):
                 pose,
                 np.zeros(3),
                 np.zeros(3),
-                env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
+                env.is_grasping
+                and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps,
             )
             env.flying_hand.set_root_pose(hand_pose)
             env.flying_hand.set_root_linear_velocity(hand_v.tolist())
             env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
         else:
             set_pose(env, pose)
-        if (
-            not env.is_grasping
-            and env._isolated_carried_actor_state is not None
-            and env.flying_hand_gripper_step + 1 >= env.flying_hand_gripper_steps
-        ):
-            restore_isolated_carried_actor(env)
         step(env, 1, save_freq=save_freq)
-    if (
-        not env.is_grasping
-        and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps
-    ):
-        restore_isolated_carried_actor(env)
 
 
-def minco(points, times, vels=None, accs=None):
-    p = np.asarray(points, dtype=float)
-    t = np.asarray(times, dtype=float)
-    n = len(t)
-    v = np.zeros((2, 3)) if vels is None else np.asarray([vels[0], vels[-1]], dtype=float)
-    a = np.zeros((2, 3)) if accs is None else np.asarray([accs[0], accs[-1]], dtype=float)
-    A = np.zeros((6 * n, 6 * n))
-    b = np.zeros((6 * n, 3))
-    A[0, 0] = A[1, 1] = 1
-    A[2, 2] = 2
-    b[:3] = [p[0], v[0], a[0]]
-    for i, T in enumerate(t[:-1]):
-        j = 6 * i
-        A[j + 3, j + 3:j + 6] = [6, 24 * T, 60 * T**2]
-        A[j + 3, j + 9] = -6
-        A[j + 4, j + 4:j + 6] = [24, 120 * T]
-        A[j + 4, j + 10] = -24
-        A[j + 5, j:j + 6] = [1, T, T**2, T**3, T**4, T**5]
-        A[j + 6, j:j + 7] = [1, T, T**2, T**3, T**4, T**5, -1]
-        A[j + 7, j + 1:j + 8] = [1, 2*T, 3*T**2, 4*T**3, 5*T**4, 0, -1]
-        A[j + 8, j + 2:j + 9] = [2, 6*T, 12*T**2, 20*T**3, 0, 0, -2]
-        b[j + 5] = p[i + 1]
-    T = t[-1]
-    j = 6 * n
-    A[j - 3, j - 6:j] = [1, T, T**2, T**3, T**4, T**5]
-    A[j - 2, j - 5:j] = [1, 2*T, 3*T**2, 4*T**3, 5*T**4]
-    A[j - 1, j - 4:j] = [2, 6*T, 12*T**2, 20*T**3]
-    b[j - 3:j] = [p[-1], v[1], a[1]]
-    return np.linalg.solve(A, b).reshape(n, 6, 3)
+def _position_coefficients(points, times):
+    _require_minco_cpp()
+    return np.asarray(
+        _minco_cpp.generate_position_coefficients(points, times),
+        dtype=float,
+    )
 
 
 def sample(coeff, t):
@@ -205,19 +241,16 @@ class MincoOptimizationConfig:
 
     enabled: bool = True
     segment_per_distance: float = 0.5
-    min_piece_num_per_key_segment: int = 2
     min_piece_num: int = 2
     plan_max_vel: float = 0.6
     plan_max_acc: float = 0.8
     plan_max_dyaw: float = 0.5
-    plan_max_path_deviation: float = 0.03
     K: int = 8
     rhoT: float = 10.0
     rhoV: float = 1000.0
     rhoA: float = 1000.0
     rhoDYaw: float = 1000.0
     rhoYawAlignmentAngle: float = 1000.0
-    rhoPathDeviation: float = 1000.0
     max_iteration: int = 300
 
     @classmethod
@@ -232,7 +265,6 @@ class MincoOptimizationConfig:
             "plan_max_vel": config.plan_max_vel,
             "plan_max_acc": config.plan_max_acc,
             "plan_max_dyaw": config.plan_max_dyaw,
-            "plan_max_path_deviation": config.plan_max_path_deviation,
         }
         invalid = [name for name, value in positive.items() if value <= 0.0]
         if invalid:
@@ -243,22 +275,15 @@ class MincoOptimizationConfig:
             "rhoA": config.rhoA,
             "rhoDYaw": config.rhoDYaw,
             "rhoYawAlignmentAngle": config.rhoYawAlignmentAngle,
-            "rhoPathDeviation": config.rhoPathDeviation,
         }
         invalid_weights = [name for name, value in weights.items() if value < 0.0]
         if invalid_weights:
             raise ValueError(
                 f"MINCO optimization penalty weights must be non-negative: {invalid_weights}"
             )
-        if (
-            config.min_piece_num_per_key_segment < 1
-            or config.min_piece_num < 1
-            or config.K < 1
-            or config.max_iteration < 1
-        ):
+        if config.min_piece_num < 1 or config.K < 1 or config.max_iteration < 1:
             raise ValueError(
-                "MINCO min_piece_num_per_key_segment, min_piece_num, K and "
-                "max_iteration must be positive integers"
+                "MINCO min_piece_num, K and max_iteration must be positive integers"
             )
         return config
 
@@ -276,6 +301,8 @@ class MincoOptimizationResult:
     initial_cost: float
     final_cost: float
     metrics: dict
+    backend: str
+    optimization_wall_time_seconds: float
 
     def as_dict(self):
         result = asdict(self)
@@ -308,43 +335,6 @@ class GoalGraspPlannerConfig:
         return config
 
 
-def _smoothed_l1(value, mu=0.01):
-    """Deployment planner's C2-smoothed positive L1 penalty."""
-    if value < 0.0:
-        return 0.0
-    if value > mu:
-        return value - 0.5 * mu
-    ratio = value / mu
-    return (mu - 0.5 * value) * ratio**3
-
-
-def _forward_time(raw_time):
-    raw_time = np.asarray(raw_time, dtype=float)
-    positive = raw_time > 0.0
-    duration = np.empty_like(raw_time)
-    duration[positive] = (0.5 * raw_time[positive] + 1.0) * raw_time[positive] + 1.0
-    denominator = (0.5 * raw_time[~positive] - 1.0) * raw_time[~positive] + 1.0
-    duration[~positive] = 1.0 / denominator
-    return duration
-
-
-def _backward_time(duration):
-    duration = np.asarray(duration, dtype=float)
-    raw_time = np.empty_like(duration)
-    large = duration > 1.0
-    raw_time[large] = np.sqrt(2.0 * duration[large] - 1.0) - 1.0
-    raw_time[~large] = 1.0 - np.sqrt(2.0 / duration[~large] - 1.0)
-    return raw_time
-
-
-def _segment_rotation_angle(start_q, end_q):
-    start_q = np.asarray(start_q, dtype=float)
-    end_q = np.asarray(end_q, dtype=float)
-    start_q /= np.linalg.norm(start_q)
-    end_q /= np.linalg.norm(end_q)
-    return 2.0 * np.arccos(np.clip(abs(float(np.dot(start_q, end_q))), 0.0, 1.0))
-
-
 def _quaternion_yaw(quaternion):
     w, x, y, z = np.asarray(quaternion, dtype=float)
     return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
@@ -360,31 +350,20 @@ def _minco_yaw_points(poses):
     return np.linspace(start, terminal, len(poses))
 
 
-def minco_yaw(yaw_points, times, rates=None):
-    yaw_points = np.asarray(yaw_points, dtype=float)
-    times = np.asarray(times, dtype=float)
-    piece_count = len(times)
-    if yaw_points.shape != (piece_count + 1,):
-        raise ValueError("yaw_points must contain one value per MINCO waypoint")
-    rates = np.zeros(2) if rates is None else np.asarray([rates[0], rates[-1]], dtype=float)
-    matrix = np.zeros((4 * piece_count, 4 * piece_count))
-    target = np.zeros(4 * piece_count)
-    matrix[0, 0] = matrix[1, 1] = 1.0
-    target[:2] = [yaw_points[0], rates[0]]
-    for index, duration in enumerate(times[:-1]):
-        row = 4 * index
-        matrix[row + 2, row + 2:row + 4] = [2.0, 6.0 * duration]
-        matrix[row + 2, row + 6] = -2.0
-        matrix[row + 3, row:row + 4] = [1.0, duration, duration**2, duration**3]
-        matrix[row + 4, row:row + 5] = [1.0, duration, duration**2, duration**3, -1.0]
-        matrix[row + 5, row + 1:row + 6] = [1.0, 2.0 * duration, 3.0 * duration**2, 0.0, -1.0]
-        target[row + 3] = yaw_points[index + 1]
-    duration = times[-1]
-    row = 4 * piece_count
-    matrix[row - 2, row - 4:row] = [1.0, duration, duration**2, duration**3]
-    matrix[row - 1, row - 3:row] = [1.0, 2.0 * duration, 3.0 * duration**2]
-    target[row - 2:row] = [yaw_points[-1], rates[1]]
-    return np.linalg.solve(matrix, target).reshape(piece_count, 4)
+def _yaw_coefficients(yaw_points, times, rates=None):
+    _require_minco_cpp()
+    rates = np.zeros(2) if rates is None else np.asarray(
+        [rates[0], rates[-1]], dtype=float
+    )
+    return np.asarray(
+        _minco_cpp.generate_yaw_coefficients(
+            yaw_points,
+            times,
+            float(rates[0]),
+            float(rates[1]),
+        ),
+        dtype=float,
+    )
 
 
 def sample_yaw(coeff, time):
@@ -394,126 +373,39 @@ def sample_yaw(coeff, time):
     return float(yaw), float(yaw_rate), float(yaw_acceleration)
 
 
-def _jerk_energy(coeff, duration):
-    a = 6.0 * coeff[3]
-    b = 24.0 * coeff[4]
-    c = 60.0 * coeff[5]
-    return float(
-        np.dot(a, a) * duration
-        + np.dot(a, b) * duration**2
-        + (np.dot(b, b) + 2.0 * np.dot(a, c)) * duration**3 / 3.0
-        + np.dot(b, c) * duration**4 / 2.0
-        + np.dot(c, c) * duration**5 / 5.0
-    )
-
-
-def _point_segment_distance(point, start, end):
-    segment = end - start
-    squared_length = float(np.dot(segment, segment))
-    if squared_length <= 1e-16:
-        return float(np.linalg.norm(point - start))
-    ratio = float(np.clip(np.dot(point - start, segment) / squared_length, 0.0, 1.0))
-    return float(np.linalg.norm(point - (start + ratio * segment)))
-
-
-def _minco_cost(
+def _trajectory_metrics(
     points,
     yaw_points,
     times,
-    config,
+    samples_per_piece,
     yaw_rates=None,
-    path_deviation_limit=None,
 ):
-    coefficients = minco(points, times)
-    yaw_coefficients = minco_yaw(yaw_points, times, rates=yaw_rates)
-    cost_jerk = 0.0
-    cost_yaw_acceleration = 0.0
-    cost_velocity = 0.0
-    cost_acceleration = 0.0
-    cost_yaw_rate = 0.0
-    cost_yaw_alignment = 0.0
-    cost_path_deviation = 0.0
+    """Sample runtime trajectory limits without duplicating the C++ objective."""
+    coefficients = _position_coefficients(points, times)
+    yaw_coefficients = _yaw_coefficients(yaw_points, times, rates=yaw_rates)
     max_velocity = 0.0
     max_acceleration = 0.0
     max_yaw_rate = 0.0
-    max_path_deviation = 0.0
 
-    target_yaw = yaw_points[-1]
-    for segment_index, (coefficient, yaw_coefficient, duration) in enumerate(
-        zip(coefficients, yaw_coefficients, times)
+    for coefficient, yaw_coefficient, duration in zip(
+        coefficients, yaw_coefficients, times
     ):
-        cost_jerk += _jerk_energy(coefficient, duration)
-        yaw_c2, yaw_c3 = yaw_coefficient[2:4]
-        cost_yaw_acceleration += (
-            4.0 * yaw_c2**2 * duration
-            + 12.0 * yaw_c2 * yaw_c3 * duration**2
-            + 12.0 * yaw_c3**2 * duration**3
-        )
-        step_time = duration / config.K
-        for sample_index in range(config.K + 1):
+        step_time = duration / samples_per_piece
+        for sample_index in range(samples_per_piece + 1):
             sample_time = sample_index * step_time
-            trapezoid_weight = 0.5 if sample_index in (0, config.K) else 1.0
-            position, velocity, acceleration = sample(coefficient, sample_time)
-            yaw, yaw_rate, _ = sample_yaw(yaw_coefficient, sample_time)
+            _, velocity, acceleration = sample(coefficient, sample_time)
+            _, yaw_rate, _ = sample_yaw(yaw_coefficient, sample_time)
             velocity_norm = float(np.linalg.norm(velocity))
             acceleration_norm = float(np.linalg.norm(acceleration))
             max_velocity = max(max_velocity, velocity_norm)
             max_acceleration = max(max_acceleration, acceleration_norm)
             max_yaw_rate = max(max_yaw_rate, abs(yaw_rate))
-            path_deviation = _point_segment_distance(
-                position,
-                points[segment_index],
-                points[segment_index + 1],
-            )
-            max_path_deviation = max(max_path_deviation, path_deviation)
-            integration_weight = trapezoid_weight * step_time
-            cost_velocity += integration_weight * config.rhoV * _smoothed_l1(
-                velocity_norm**2 - config.plan_max_vel**2
-            )
-            cost_acceleration += integration_weight * config.rhoA * _smoothed_l1(
-                acceleration_norm**2 - config.plan_max_acc**2
-            )
-            cost_yaw_rate += integration_weight * config.rhoDYaw * _smoothed_l1(
-                yaw_rate**2 - config.plan_max_dyaw**2
-            )
-            cost_yaw_alignment += (
-                integration_weight
-                * config.rhoYawAlignmentAngle
-                * _angle_error(yaw, target_yaw) ** 2
-            )
-            if path_deviation_limit is not None:
-                cost_path_deviation += (
-                    integration_weight
-                    * config.rhoPathDeviation
-                    * _smoothed_l1(path_deviation - path_deviation_limit)
-                )
-
-    cost_time = config.rhoT * float(np.sum(times))
-    metrics = {
-        "cost_time": cost_time,
-        "cost_jerk": cost_jerk,
-        "cost_yaw_acceleration": cost_yaw_acceleration,
-        "cost_velocity": cost_velocity,
-        "cost_acceleration": cost_acceleration,
-        "cost_yaw_rate": cost_yaw_rate,
-        "cost_yaw_alignment": cost_yaw_alignment,
-        "cost_path_deviation": cost_path_deviation,
+    return {
         "max_velocity_mps": max_velocity,
         "max_acceleration_mps2": max_acceleration,
         "max_yaw_rate_rad_s": max_yaw_rate,
-        "max_path_deviation_m": max_path_deviation,
         "total_time_s": float(np.sum(times)),
     }
-    return sum(metrics[key] for key in (
-        "cost_time",
-        "cost_jerk",
-        "cost_yaw_acceleration",
-        "cost_velocity",
-        "cost_acceleration",
-        "cost_yaw_rate",
-        "cost_yaw_alignment",
-        "cost_path_deviation",
-    )), metrics
 
 
 class MincoTimeOptimizer:
@@ -522,12 +414,7 @@ class MincoTimeOptimizer:
     def __init__(self, config):
         self.config = config
 
-    def _initial_times(
-        self,
-        poses,
-        initial_yaw_rate=0.0,
-        constrain_path_deviation=False,
-    ):
+    def _initial_times(self, poses, initial_yaw_rate=0.0):
         points = np.asarray([pose.p for pose in poses], dtype=float)
         distances = np.linalg.norm(points[1:] - points[:-1], axis=1)
         yaw_points = _minco_yaw_points(poses)
@@ -537,17 +424,12 @@ class MincoTimeOptimizer:
         times = distances / self.config.plan_max_vel
         times = np.maximum(times, 1e-3)
         for attempt in range(3):
-            _, metrics = _minco_cost(
+            metrics = _trajectory_metrics(
                 points,
                 yaw_points,
                 times,
-                self.config,
+                self.config.K,
                 yaw_rates=yaw_rates,
-                path_deviation_limit=(
-                    self.config.plan_max_path_deviation
-                    if constrain_path_deviation
-                    else None
-                ),
             )
             if (
                 metrics["max_velocity_mps"] <= self.config.plan_max_vel
@@ -558,31 +440,17 @@ class MincoTimeOptimizer:
                 times *= 1.5
         return times
 
-    def optimize(
-        self,
-        poses,
-        initial_yaw_rate=0.0,
-        constrain_path_deviation=False,
-    ):
-        initial_times = self._initial_times(
-            poses,
-            initial_yaw_rate,
-            constrain_path_deviation,
-        )
+    def optimize(self, poses, initial_yaw_rate=0.0):
+        initial_times = self._initial_times(poses, initial_yaw_rate)
         points = np.asarray([pose.p for pose in poses], dtype=float)
         yaw_points = _minco_yaw_points(poses)
         yaw_rates = np.array([initial_yaw_rate, 0.0], dtype=float)
-        initial_cost, initial_metrics = _minco_cost(
+        initial_metrics = _trajectory_metrics(
             points,
             yaw_points,
             initial_times,
-            self.config,
+            self.config.K,
             yaw_rates=yaw_rates,
-            path_deviation_limit=(
-                self.config.plan_max_path_deviation
-                if constrain_path_deviation
-                else None
-            ),
         )
         if not self.config.enabled:
             return MincoOptimizationResult(
@@ -594,75 +462,59 @@ class MincoTimeOptimizer:
                 message="MINCO time optimization disabled",
                 iterations=0,
                 function_evaluations=1,
-                initial_cost=initial_cost,
-                final_cost=initial_cost,
+                initial_cost=0.0,
+                final_cost=0.0,
                 metrics=initial_metrics,
+                backend="disabled",
+                optimization_wall_time_seconds=0.0,
             )
 
-        raw_initial = _backward_time(initial_times)
-
-        def objective(raw_time):
-            try:
-                value, _ = _minco_cost(
-                    points,
-                    yaw_points,
-                    _forward_time(raw_time),
-                    self.config,
-                    yaw_rates=yaw_rates,
-                    path_deviation_limit=(
-                        self.config.plan_max_path_deviation
-                        if constrain_path_deviation
-                        else None
-                    ),
-                )
-                return value if np.isfinite(value) else 1e30
-            except np.linalg.LinAlgError:
-                return 1e30
-
-        result = minimize(
-            objective,
-            raw_initial,
-            method="L-BFGS-B",
-            options={
-                "maxiter": self.config.max_iteration,
-                "ftol": 1e-8,
-                "maxls": 40,
-            },
-        )
-        candidate_times = _forward_time(result.x)
-        candidate_cost, candidate_metrics = _minco_cost(
+        result = _minco_cpp.optimize_times(
             points,
             yaw_points,
-            candidate_times,
-            self.config,
-            yaw_rates=yaw_rates,
-            path_deviation_limit=(
-                self.config.plan_max_path_deviation
-                if constrain_path_deviation
-                else None
-            ),
+            initial_times,
+            float(initial_yaw_rate),
+            asdict(self.config),
         )
-        success = bool(result.success and np.isfinite(candidate_cost))
+        candidate_times = np.asarray(result["times"], dtype=float)
+        candidate_valid = (
+            candidate_times.shape == initial_times.shape
+            and np.all(np.isfinite(candidate_times))
+            and np.all(candidate_times > 0.0)
+        )
+        success = bool(
+            result["success"]
+            and candidate_valid
+            and np.isfinite(float(result["final_cost"]))
+        )
         if success:
             final_times = candidate_times
-            final_cost = candidate_cost
-            final_metrics = candidate_metrics
+            final_cost = float(result["final_cost"])
+            final_metrics = _trajectory_metrics(
+                points,
+                yaw_points,
+                candidate_times,
+                self.config.K,
+                yaw_rates=yaw_rates,
+            )
         else:
             final_times = initial_times
-            final_cost = initial_cost
+            final_cost = float(result["initial_cost"])
             final_metrics = initial_metrics
         return MincoOptimizationResult(
             times=final_times,
             initial_times=initial_times,
             success=success,
             used_fallback=not success,
-            status=int(result.status),
-            message=str(result.message),
-            iterations=int(result.nit),
-            function_evaluations=int(result.nfev),
-            initial_cost=float(initial_cost),
+            status=int(result["status"]),
+            message=str(result["message"]),
+            iterations=int(result["iterations"]),
+            function_evaluations=int(result["function_evaluations"]),
+            initial_cost=float(result["initial_cost"]),
             final_cost=float(final_cost),
             metrics=final_metrics,
+            backend=str(_minco_cpp.backend_name),
+            optimization_wall_time_seconds=float(result["wall_time_seconds"]),
         )
 
 
@@ -670,9 +522,7 @@ def _densify_plan(poses, config):
     """Subdivide every task waypoint leg without moving its key endpoints.
 
     ``segment_per_distance`` retains the deployment planner's distance-based
-    subdivision.  The simulation-only per-key-segment minimum additionally
-    prevents a long quintic span from joining two otherwise nearby collision-
-    clearance waypoints without an intermediate positional constraint.
+    subdivision, while ``min_piece_num`` guarantees enough pieces globally.
     """
     dense_poses = [poses[0]]
     for start, end in zip(poses[:-1], poses[1:]):
@@ -680,7 +530,7 @@ def _densify_plan(poses, config):
         # C++ std::round() rounds positive half-integers away from zero,
         # whereas Python round() uses bankers rounding.
         piece_count = max(
-            config.min_piece_num_per_key_segment,
+            1,
             int(np.floor(distance / config.segment_per_distance + 0.5)),
         )
         for index in range(1, piece_count + 1):
@@ -713,7 +563,6 @@ def plan_and_move_minco(
     carried_actor=None,
     carried_pose=None,
     phase_name=None,
-    constrain_path_deviation=False,
 ):
     """Optimize task-path segment times, then execute the resulting MINCO path."""
     if len(poses) < 2:
@@ -738,7 +587,6 @@ def plan_and_move_minco(
     result = env.minco_time_optimizer.optimize(
         dense_poses,
         initial_yaw_rate=initial_yaw_rate,
-        constrain_path_deviation=constrain_path_deviation,
     )
     phase_index = len(env.minco_plan_diagnostics)
     diagnostic = result.as_dict()
@@ -755,7 +603,6 @@ def plan_and_move_minco(
         "start_position_error_m": start_position_error,
         "start_yaw_error_rad": start_yaw_error,
         "initial_yaw_rate_rad_s": initial_yaw_rate,
-        "path_deviation_constrained": bool(constrain_path_deviation),
     })
     env.minco_plan_diagnostics.append(diagnostic)
     if not result.success:
@@ -769,7 +616,7 @@ def plan_and_move_minco(
         save_freq=save_freq,
         carried_actor=carried_actor,
         carried_pose=carried_pose,
-        yaw_coefficients=minco_yaw(
+        yaw_coefficients=_yaw_coefficients(
             _minco_yaw_points(dense_poses),
             result.times,
             rates=[initial_yaw_rate, 0.0],
@@ -836,7 +683,6 @@ class TaskMotionPlanner:
         carried_pose=None,
         gripper_after_reach=None,
         gripper_qpos=None,
-        constrain_path_deviation=False,
     ):
         result = plan_and_move_minco(
             self.env,
@@ -846,7 +692,6 @@ class TaskMotionPlanner:
             carried_actor=carried_actor,
             carried_pose=carried_pose,
             phase_name=phase_name,
-            constrain_path_deviation=constrain_path_deviation,
         )
         if gripper_after_reach is not None:
             self.set_gripper(
@@ -894,32 +739,24 @@ class TaskMotionPlanner:
 def move_minco(
     env,
     poses,
-    times=None,
-    duration=None,
-    steps=None,
-    vels=None,
-    accs=None,
+    times,
     save_freq=-1,
     carried_actor=None,
     carried_pose=None,
     yaw_coefficients=None,
 ):
-    carry_mode = env.flying_hand_carry_mode
-    if carried_actor is not None and carry_mode == "isolated_set_actor_pose":
+    if carried_actor is not None:
         _begin_isolated_carry(env, carried_actor)
 
-    if carried_actor is not None and env._flying_hand_grasp_needs_settle:
-        settle_steps = int(round(env.post_grasp_settle_seconds / env.sim_timestep))
-        if settle_steps > 0:
-            hold(env, poses[0], settle_steps, save_freq=save_freq)
-        env._flying_hand_grasp_needs_settle = False
-
     ps = np.array([pose.p for pose in poses], dtype=float)
-    if times is None:
-        duration = (steps or 80) * env.sim_timestep if duration is None else duration
-        dist = np.linalg.norm(ps[1:] - ps[:-1], axis=1)
-        times = np.full(len(poses) - 1, duration / (len(poses) - 1)) if dist.sum() == 0 else duration * dist / dist.sum()
-    coeffs = minco(ps, times, vels, accs)
+    times = np.asarray(times, dtype=float)
+    if (
+        times.shape != (len(poses) - 1,)
+        or np.any(~np.isfinite(times))
+        or np.any(times <= 0.0)
+    ):
+        raise ValueError("times must contain one finite positive duration per segment")
+    coeffs = _position_coefficients(ps, times)
     carried_pose = carried_pose if carried_pose is not None else (
         poses[0].inv() * carried_actor.get_pose() if carried_actor is not None else None
     )
@@ -950,7 +787,8 @@ def move_minco(
                         ref_pose,
                         v,
                         a,
-                        env.is_grasping and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps * env.flying_hand_gripper_prismatic_stage_ratio,
+                        env.is_grasping
+                        and env.flying_hand_gripper_step >= env.flying_hand_gripper_steps,
                     )
                     env.flying_hand.set_root_pose(hand_pose)
                     env.flying_hand.set_root_linear_velocity(hand_v.tolist())
@@ -958,16 +796,8 @@ def move_minco(
                 else:
                     hand_pose, hand_v = ref_pose, v
                     set_pose(env, hand_pose, hand_v)
-                carried_pose_fn = None
-                if carried_actor is not None and carry_mode == "set_actor_pose":
-                    actor_pose = hand_pose * carried_pose
-                    carried_pose_fn = lambda actor=carried_actor, pose=actor_pose, vel=hand_v: (actor, pose, vel)
-                elif carried_actor is not None and carry_mode == "isolated_set_actor_pose":
+                if carried_actor is not None:
                     _set_isolated_actor_pose(carried_actor, hand_pose * carried_pose)
-                step(env, 1, save_freq=save_freq, carried_pose_fn=carried_pose_fn)
+                step(env, 1, save_freq=save_freq)
     finally:
         env._flying_hand_carrying = False
-
-
-def move_linear(env, start, end, duration=None, steps=None, save_freq=-1, carried_actor=None, carried_pose=None):
-    move_minco(env, [start, end], duration=duration, steps=steps, save_freq=save_freq, carried_actor=carried_actor, carried_pose=carried_pose)

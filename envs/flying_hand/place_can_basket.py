@@ -78,13 +78,12 @@ class place_can_basket(FlyingHandBaseTask):
             carried_actor=self.can,
             carried_pose=carried_pose,
         )
-        if self.flying_hand_carry_mode == "isolated_set_actor_pose":
-            isolated_target = place * carried_pose
-            isolated_target = type(isolated_target)(
-                (np.asarray(isolated_target.p) + [0.0, 0.0, self.isolated_release_z_offset]).tolist(),
-                isolated_target.q,
-            )
-            planner.set_isolated_carried_actor_target(self, self.can, isolated_target)
+        isolated_target = place * carried_pose
+        isolated_target = type(isolated_target)(
+            (np.asarray(isolated_target.p) + [0.0, 0.0, self.isolated_release_z_offset]).tolist(),
+            isolated_target.q,
+        )
+        planner.set_isolated_carried_actor_target(self, self.can, isolated_target)
         motion.set_gripper(place, "open")
         motion.move(
             [place, place_pre],

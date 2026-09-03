@@ -11,6 +11,7 @@ import argparse
 import importlib
 import json
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -24,7 +25,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from script.view_task import load_task_args
 from envs.flying_hand import planner
-from envs.flying_hand._base_task import FlyingHandBaseTask
 
 
 DEFAULT_TASKS = (
@@ -83,6 +83,12 @@ def _minco_planner_summary(plans):
     ))
     return {
         "phase_count": len(plans),
+        "optimizer_backends": sorted({
+            str(plan.get("backend", "unknown")) for plan in plans
+        }),
+        "total_optimization_wall_time_s": sum(
+            number(plan, "optimization_wall_time_seconds") for plan in plans
+        ),
         "total_initial_flight_time_s": sum(duration_total(plan, "initial_times") for plan in plans),
         "total_optimized_flight_time_s": sum(metric(plan, "total_time_s") for plan in plans),
         "total_iterations": sum(int(number(plan, "iterations")) for plan in plans),
@@ -101,7 +107,6 @@ def _minco_planner_summary(plans):
         "max_planned_velocity_mps": max((metric(plan, "max_velocity_mps") for plan in plans), default=0.0),
         "max_planned_acceleration_mps2": max((metric(plan, "max_acceleration_mps2") for plan in plans), default=0.0),
         "max_planned_yaw_rate_rad_s": max((metric(plan, "max_yaw_rate_rad_s") for plan in plans), default=0.0),
-        "max_planned_path_deviation_m": max((metric(plan, "max_path_deviation_m") for plan in plans), default=0.0),
     }
 
 
@@ -500,6 +505,91 @@ def _save_link_traces(path, traces):
     np.savez_compressed(path, **arrays)
 
 
+class TaskVideoRecorder:
+    """Stream selected task cameras to one H.264 video per camera."""
+
+    def __init__(self, output_dir, stride_steps, fps):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.stride_steps = int(stride_steps)
+        self.fps = float(fps)
+        self.processes = {}
+        self.paths = {}
+        self.frame_count = 0
+        self.last_step = None
+
+    def _start_process(self, camera_name, frame):
+        height, width = frame.shape[:2]
+        safe_camera_name = camera_name.replace("/", "_")
+        path = self.output_dir / f"{safe_camera_name}.mp4"
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                f"{width}x{height}",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                "-",
+                "-pix_fmt",
+                "yuv420p",
+                "-vcodec",
+                "libx264",
+                "-crf",
+                "23",
+                str(path),
+            ],
+            stdin=subprocess.PIPE,
+        )
+        self.processes[camera_name] = process
+        self.paths[camera_name] = str(path)
+        return process
+
+    def capture(self, env, force=False):
+        step_index = int(env.flying_hand_save_step)
+        if self.last_step == step_index:
+            return
+        if not force and step_index % self.stride_steps:
+            return
+        observation = env.get_obs()["observation"]
+        wrote_frame = False
+        for camera_name, camera_observation in observation.items():
+            if "rgb" not in camera_observation:
+                continue
+            frame = np.asarray(camera_observation["rgb"])
+            if frame.ndim != 3 or frame.shape[2] < 3:
+                raise ValueError(
+                    f"Camera {camera_name!r} returned invalid RGB shape {frame.shape}"
+                )
+            frame = np.ascontiguousarray(frame[:, :, :3], dtype=np.uint8)
+            process = self.processes.get(camera_name)
+            if process is None:
+                process = self._start_process(camera_name, frame)
+            process.stdin.write(frame.tobytes())
+            wrote_frame = True
+        if wrote_frame:
+            self.frame_count += 1
+            self.last_step = step_index
+
+    def close(self):
+        errors = []
+        for process in self.processes.values():
+            process.stdin.close()
+        for camera_name, process in self.processes.items():
+            return_code = process.wait()
+            if return_code:
+                errors.append(f"{camera_name}: ffmpeg exited with {return_code}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
+
+
 def _empty_link_jitter_summary():
     return {
         "samples": 0,
@@ -546,8 +636,8 @@ def run_once(
     task_config,
     seed,
     trace_path=None,
-    carry_mode=None,
-    post_grasp_settle_seconds=None,
+    video_dir=None,
+    video_stride_steps=None,
 ):
     started = time.monotonic()
     result = {
@@ -555,8 +645,6 @@ def run_once(
         "task_config": task_config,
         "seed": seed,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
-        "carry_mode": carry_mode,
-        "post_grasp_settle_seconds": post_grasp_settle_seconds,
         "minco_plans": [],
         "planner_summary": _minco_planner_summary([]),
         "rod_physics": {},
@@ -565,6 +653,7 @@ def run_once(
     original_step = planner.step
     monitor = GraspMonitor()
     link_monitor = LinkJitterMonitor()
+    video_recorder = None
     rod_physics = {
         "source_rod": {"samples": 0, "disabled_samples": 0},
         "target_rod": {"samples": 0, "disabled_samples": 0},
@@ -589,28 +678,34 @@ def run_once(
                 any(not bool(component.is_enabled) for component in components)
             )
 
-    def monitored_step(env, n, save_freq=-1, carried_pose_fn=None):
+    def monitored_step(env, n, save_freq=-1):
         for _ in range(n):
             sample_rod_physics()
             monitor.before_step(env)
             carrying = bool(getattr(env, "_flying_hand_carrying", False))
             link_monitor.before_step(env, carrying=carrying)
-            original_step(env, 1, save_freq=save_freq, carried_pose_fn=carried_pose_fn)
+            original_step(env, 1, save_freq=save_freq)
             monitor.after_step(env)
             link_monitor.after_step(env, carrying=carrying)
+            if video_recorder is not None:
+                video_recorder.capture(env)
 
     try:
         args = load_task_args(task_name, task_config, 0)
         args["seed"] = seed
-        if carry_mode is not None:
-            args["flying_hand_carry_mode"] = carry_mode
-        if post_grasp_settle_seconds is not None:
-            args["post_grasp_settle_seconds"] = post_grasp_settle_seconds
         task = _class_for_task(task_name)()
         planner.step = monitored_step
         task.setup_demo(**args)
-        result["carry_mode"] = task.flying_hand_carry_mode
-        result["post_grasp_settle_seconds"] = task.post_grasp_settle_seconds
+        if video_dir is not None:
+            stride_steps = int(video_stride_steps or task.save_freq)
+            if stride_steps <= 0:
+                raise ValueError("video_stride_steps must be positive")
+            video_recorder = TaskVideoRecorder(
+                video_dir,
+                stride_steps,
+                fps=1.0 / (float(task.sim_timestep) * stride_steps),
+            )
+            video_recorder.capture(task, force=True)
         task.play_once()
         monitor.finish(task)
         link_monitor.finish(task)
@@ -661,6 +756,16 @@ def run_once(
     finally:
         planner.step = original_step
         if task is not None:
+            if video_recorder is not None:
+                try:
+                    video_recorder.capture(task, force=True)
+                    video_recorder.close()
+                    result["videos"] = video_recorder.paths
+                    result["video_frame_count"] = video_recorder.frame_count
+                except Exception as exc:
+                    result.setdefault(
+                        "video_error", f"{type(exc).__name__}: {exc}"
+                    )
             result["minco_plans"] = _json_value(getattr(task, "minco_plan_diagnostics", []))
             result["planner_summary"] = _minco_planner_summary(result["minco_plans"])
             try:
@@ -677,17 +782,18 @@ def main():
     parser.add_argument("--tasks", nargs="+", default=list(DEFAULT_TASKS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--render-videos", action="store_true")
+    parser.add_argument("--video-stride-steps", type=int)
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
-    parser.add_argument(
-        "--carry-mode",
-        choices=sorted(FlyingHandBaseTask.flying_hand_carry_modes),
-    )
-    parser.add_argument("--post-grasp-settle-seconds", type=float)
     args = parser.parse_args()
 
     if args.worker_count <= 0 or not 0 <= args.worker_index < args.worker_count:
         parser.error("worker index must satisfy 0 <= worker-index < worker-count")
+    if args.render_videos and args.output_dir is None:
+        parser.error("--render-videos requires --output-dir")
+    if args.video_stride_steps is not None and args.video_stride_steps <= 0:
+        parser.error("--video-stride-steps must be positive")
 
     jobs = [(task_name, seed) for task_name in args.tasks for seed in args.seeds]
     jobs = [job for index, job in enumerate(jobs) if index % args.worker_count == args.worker_index]
@@ -707,8 +813,12 @@ def main():
             args.task_config,
             seed,
             trace_path=trace_path,
-            carry_mode=args.carry_mode,
-            post_grasp_settle_seconds=args.post_grasp_settle_seconds,
+            video_dir=(
+                args.output_dir / "videos" / f"{task_name}__seed_{seed:03d}"
+                if args.render_videos
+                else None
+            ),
+            video_stride_steps=args.video_stride_steps,
         )
         line = json.dumps(result, sort_keys=True)
         print(line, flush=True)

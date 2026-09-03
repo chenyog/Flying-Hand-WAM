@@ -2,6 +2,7 @@
 """Numerical unit tests for the Flying-Hand MINCO planner."""
 
 import unittest
+from dataclasses import asdict
 from pathlib import Path
 import sys
 
@@ -21,21 +22,60 @@ def _pose(position, yaw=0.0):
 
 
 class FlyingHandMincoPlannerTest(unittest.TestCase):
-    def test_positive_time_mapping_round_trip(self):
-        durations = np.array([0.05, 0.5, 1.0, 2.0, 10.0])
-        np.testing.assert_allclose(
-            planner._forward_time(planner._backward_time(durations)),
-            durations,
-            rtol=1e-12,
-            atol=1e-12,
-        )
+    def test_release_collision_filter_preserves_scene_collisions_and_restores_groups(self):
+        class Shape:
+            def __init__(self, groups):
+                self.groups = list(groups)
+
+            def get_collision_groups(self):
+                return list(self.groups)
+
+            def set_collision_groups(self, groups):
+                self.groups = list(groups)
+
+        class Component:
+            def __init__(self, shapes):
+                self.shapes = shapes
+
+            def get_collision_shapes(self):
+                return self.shapes
+
+        class Link:
+            def __init__(self, shape):
+                self.shape = shape
+
+            def get_collision_shapes(self):
+                return [self.shape]
+
+        actor_shape = Shape([1, 1, 0, 0])
+        actor = type("Actor", (), {})()
+        actor.actor = type(
+            "Entity",
+            (),
+            {"components": [Component([actor_shape])]},
+        )()
+        env = type("Env", (), {})()
+        env._released_actor_collision_state = None
+        env.flying_hand = type(
+            "Hand",
+            (),
+            {"get_links": lambda self: [Link(Shape([1, 1, 1 << 8, 0x143]))]},
+        )()
+
+        planner._suppress_released_actor_gripper_collisions(env, actor)
+
+        self.assertEqual(actor_shape.groups, [1, 1, 1 << 8, 0x143])
+        self.assertIs(env._released_actor_collision_state["actor"], actor)
+        planner.restore_released_actor_collisions(env)
+        self.assertEqual(actor_shape.groups, [1, 1, 0, 0])
+        self.assertIsNone(env._released_actor_collision_state)
 
     def test_xyz_and_yaw_minco_are_continuous_at_internal_waypoint(self):
         points = np.array([[0.0, 0.0, 0.0], [0.4, 0.2, 0.1], [0.9, 0.0, 0.2]])
         yaw_points = np.array([3.0, np.pi, 3.3])
         times = np.array([1.2, 1.6])
-        xyz = planner.minco(points, times)
-        yaw = planner.minco_yaw(yaw_points, times)
+        xyz = planner._position_coefficients(points, times)
+        yaw = planner._yaw_coefficients(yaw_points, times)
 
         end_pva = planner.sample(xyz[0], times[0])
         start_pva = planner.sample(xyz[1], 0.0)
@@ -74,6 +114,59 @@ class FlyingHandMincoPlannerTest(unittest.TestCase):
         self.assertFalse(np.allclose(result.times, result.initial_times))
         self.assertLessEqual(result.final_cost, result.initial_cost + 1e-8)
         self.assertEqual(result.metrics["total_time_s"], np.sum(result.times))
+        self.assertEqual(result.backend, "deployment_cpp_minco_lbfgs")
+        self.assertGreater(result.function_evaluations, 0)
+        self.assertGreaterEqual(result.optimization_wall_time_seconds, 0.0)
+
+    def test_cpp_analytic_time_gradient_matches_finite_difference(self):
+        points = np.array([
+            [0.0, 0.0, 0.0],
+            [0.2, 0.2, 0.0],
+            [0.4, 0.0, 0.0],
+        ])
+        yaw_points = np.array([0.0, 0.1, 0.2])
+        raw_times = np.array([-0.15, 0.2])
+        config = planner.MincoOptimizationConfig()
+
+        cpp_cost, analytic_gradient = planner._minco_cpp.evaluate_raw_times(
+            points,
+            yaw_points,
+            raw_times,
+            0.0,
+            asdict(config),
+        )
+        self.assertTrue(np.isfinite(cpp_cost))
+        finite_difference = np.empty_like(raw_times)
+        epsilon = 1e-6
+        for index in range(len(raw_times)):
+            positive = raw_times.copy()
+            negative = raw_times.copy()
+            positive[index] += epsilon
+            negative[index] -= epsilon
+            positive_cost = planner._minco_cpp.evaluate_raw_times(
+                points,
+                yaw_points,
+                positive,
+                0.0,
+                asdict(config),
+            )[0]
+            negative_cost = planner._minco_cpp.evaluate_raw_times(
+                points,
+                yaw_points,
+                negative,
+                0.0,
+                asdict(config),
+            )[0]
+            finite_difference[index] = (
+                positive_cost - negative_cost
+            ) / (2.0 * epsilon)
+
+        np.testing.assert_allclose(
+            analytic_gradient,
+            finite_difference,
+            rtol=2e-7,
+            atol=2e-6,
+        )
 
     def test_deployment_path_densification_preserves_endpoints_and_minimum_pieces(self):
         poses = [_pose([0.0, 0.0, 0.0]), _pose([0.2, 0.0, 0.0])]
@@ -99,7 +192,7 @@ class FlyingHandMincoPlannerTest(unittest.TestCase):
 
         self.assertEqual(len(dense) - 1, 3)
 
-    def test_densification_inserts_a_midpoint_between_each_key_waypoint(self):
+    def test_densification_preserves_nearby_key_waypoints_without_forced_midpoints(self):
         poses = [
             _pose([0.0, 0.0, 0.0], yaw=0.0),
             _pose([0.2, 0.0, 0.0], yaw=0.4),
@@ -107,26 +200,14 @@ class FlyingHandMincoPlannerTest(unittest.TestCase):
         ]
         config = planner.MincoOptimizationConfig(
             segment_per_distance=0.5,
-            min_piece_num_per_key_segment=2,
             min_piece_num=1,
         )
 
         dense = planner._densify_plan(poses, config)
 
-        self.assertEqual(len(dense), 5)
-        np.testing.assert_allclose(dense[1].p, [0.1, 0.0, 0.0])
-        np.testing.assert_allclose(dense[2].p, poses[1].p)
-        np.testing.assert_allclose(dense[3].p, [0.2, 0.1, 0.0])
+        self.assertEqual(len(dense), 3)
+        np.testing.assert_allclose(dense[1].p, poses[1].p)
         np.testing.assert_allclose(dense[-1].p, poses[-1].p)
-
-    def test_path_deviation_uses_distance_to_waypoint_chord(self):
-        distance = planner._point_segment_distance(
-            np.array([0.5, 0.1, 0.0]),
-            np.array([0.0, 0.0, 0.0]),
-            np.array([1.0, 0.0, 0.0]),
-        )
-
-        self.assertAlmostEqual(distance, 0.1)
 
 
 if __name__ == "__main__":

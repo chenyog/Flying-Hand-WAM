@@ -120,6 +120,10 @@ def _planner_values(row):
     return {
         "phase_count": int(_number(summary.get("phase_count"), len(plans))),
         "optimized_flight_time_s": _number(summary.get("total_optimized_flight_time_s")),
+        "optimization_wall_time_s": _number(
+            summary.get("total_optimization_wall_time_s"),
+            sum(_number(plan.get("optimization_wall_time_seconds")) for plan in plans),
+        ),
         "iterations": int(_number(summary.get("total_iterations"))),
         "function_evaluations": int(_number(summary.get("total_function_evaluations"))),
         "planner_failed": bool(summary.get("any_failed", False)),
@@ -170,6 +174,7 @@ def _aggregate(rows):
         values = _planner_values(row)
         planner["phase_count"] += values["phase_count"]
         planner["optimized_flight_time_s"] += values["optimized_flight_time_s"]
+        planner["optimization_wall_time_s"] += values["optimization_wall_time_s"]
         planner["iterations"] += values["iterations"]
         planner["function_evaluations"] += values["function_evaluations"]
         planner["failed_job_count"] += int(values["planner_failed"])
@@ -210,6 +215,7 @@ def _csv_row(task, aggregate):
         **{status: statuses[status] for status in STATUS_NAMES},
         "planner_phase_count": planner["phase_count"],
         "planner_optimized_flight_time_s": planner["optimized_flight_time_s"],
+        "planner_optimization_wall_time_s": planner["optimization_wall_time_s"],
         "planner_iterations": planner["iterations"],
         "planner_function_evaluations": planner["function_evaluations"],
         "planner_failed_job_count": planner["failed_job_count"],
