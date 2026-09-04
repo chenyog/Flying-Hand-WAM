@@ -38,6 +38,7 @@ class place_can_basket(FlyingHandBaseTask):
         can_slot, basket_slot = np.random.choice(len(self.board_slots), 2, replace=False)
         self.can = self._create_board_actor(self.can_name, self.can_id, int(can_slot), mass=0.1, qpos=self.can_qpos)
         self.basket = self._create_board_actor(self.basket_name, self.basket_id, int(basket_slot), mass=0.8, qpos=self.basket_qpos)
+        self.graspable_actors = [self.can]
         self.can_start_z = self.can.get_pose().p[2]
         self.basket_start_z = self.basket.get_pose().p[2]
         self.add_prohibit_area(self.can, padding=0.16)

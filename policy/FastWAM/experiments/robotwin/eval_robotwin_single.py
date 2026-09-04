@@ -168,6 +168,16 @@ def main(cfg: DictConfig):
     _append_override(overrides, "policy_name", cfg.EVALUATION.policy_name)
     _append_override(overrides, "instruction_type", cfg.EVALUATION.instruction_type)
     _append_override(overrides, "eval_num_episodes", cfg.EVALUATION.eval_num_episodes)
+    _append_override(
+        overrides,
+        "eval_video_episode_limit",
+        cfg.EVALUATION.get("eval_video_episode_limit"),
+    )
+    _append_override(
+        overrides,
+        "eval_video_max_seconds",
+        cfg.EVALUATION.get("eval_video_max_seconds"),
+    )
 
     _append_override(overrides, "sim_cfg_path", str(sim_cfg_path))
     _append_override(overrides, "sim_task", sim_task)
@@ -177,8 +187,6 @@ def main(cfg: DictConfig):
     _append_override(overrides, "dataset_stats_path", str(dataset_stats_path))
     _append_override(overrides, "action_horizon", cfg.EVALUATION.action_horizon)
     _append_override(overrides, "replan_steps", cfg.EVALUATION.replan_steps)
-    _append_override(overrides, "inference_latency_s", cfg.EVALUATION.get("inference_latency_s"))
-    _append_override(overrides, "action_execution_mode", cfg.EVALUATION.get("action_execution_mode"))
     _append_override(overrides, "num_inference_steps", cfg.EVALUATION.num_inference_steps)
     _append_override(overrides, "sigma_shift", cfg.EVALUATION.sigma_shift)
     _append_override(overrides, "text_cfg_scale", cfg.EVALUATION.text_cfg_scale)

@@ -22,6 +22,56 @@ def _pose(position, yaw=0.0):
 
 
 class FlyingHandMincoPlannerTest(unittest.TestCase):
+    def test_physics_step_restores_analytical_flying_hand_root_state(self):
+        class Hand:
+            def __init__(self):
+                self.pose = None
+                self.linear_velocity = None
+                self.angular_velocity = None
+
+            def set_root_pose(self, pose):
+                self.pose = pose
+
+            def set_root_linear_velocity(self, velocity):
+                self.linear_velocity = list(velocity)
+
+            def set_root_angular_velocity(self, velocity):
+                self.angular_velocity = list(velocity)
+
+        class Scene:
+            def __init__(self, hand):
+                self.hand = hand
+
+            def step(self):
+                # Model the unwanted PhysX root update that happens between
+                # the analytical controller update and observation.
+                self.hand.set_root_pose(_pose([99.0, 99.0, 99.0], yaw=1.0))
+                self.hand.set_root_angular_velocity([100.0, 200.0, 300.0])
+
+        env = type("Env", (), {})()
+        env.flying_hand = Hand()
+        env.scene = Scene(env.flying_hand)
+        env.enable_dynamics = True
+        env.flying_hand_dynamics = type("Dynamics", (), {
+            "p": np.array([0.1, 0.2, 0.3]),
+            "q": np.array([1.0, 0.0, 0.0, 0.0]),
+            "v": np.array([0.4, 0.5, 0.6]),
+            "w": np.array([0.7, 0.8, 0.9]),
+        })()
+        env.apply_flying_hand_gripper_qpos = lambda: None
+        env._released_actor_collision_state = None
+        env._task_objects_safe = lambda: True
+        env.flying_hand_save_step = 0
+        env.render_freq = 0
+        env._save_flying_hand_frame = lambda save_freq: None
+
+        planner.step(env, 1)
+
+        np.testing.assert_allclose(env.flying_hand.pose.p, env.flying_hand_dynamics.p)
+        np.testing.assert_allclose(env.flying_hand.pose.q, env.flying_hand_dynamics.q)
+        np.testing.assert_allclose(env.flying_hand.linear_velocity, env.flying_hand_dynamics.v)
+        np.testing.assert_allclose(env.flying_hand.angular_velocity, env.flying_hand_dynamics.w)
+
     def test_release_collision_filter_preserves_scene_collisions_and_restores_groups(self):
         class Shape:
             def __init__(self, groups):
@@ -117,6 +167,54 @@ class FlyingHandMincoPlannerTest(unittest.TestCase):
         self.assertEqual(result.backend, "deployment_cpp_minco_lbfgs")
         self.assertGreater(result.function_evaluations, 0)
         self.assertGreaterEqual(result.optimization_wall_time_seconds, 0.0)
+
+    def test_safety_retiming_enforces_hard_motion_limits(self):
+        points = np.array([
+            [0.0, 0.0, 0.0],
+            [0.35, 0.25, 0.10],
+            [0.70, 0.0, 0.20],
+        ])
+        yaw_points = np.array([0.0, 0.5, 1.0])
+        unsafe_times = np.array([0.08, 0.08])
+        config = planner.MincoOptimizationConfig(
+            plan_max_vel=0.6,
+            plan_max_acc=0.8,
+            plan_max_dyaw=0.5,
+        )
+
+        safe_times, metrics, scale, satisfied = planner._retime_to_hard_limits(
+            points,
+            yaw_points,
+            unsafe_times,
+            config,
+        )
+
+        self.assertTrue(satisfied)
+        self.assertGreater(scale, 1.0)
+        self.assertTrue(np.all(safe_times > unsafe_times))
+        self.assertLessEqual(metrics["max_velocity_mps"], config.plan_max_vel * (1 + 1e-6))
+        self.assertLessEqual(metrics["max_acceleration_mps2"], config.plan_max_acc * (1 + 1e-6))
+        self.assertLessEqual(metrics["max_yaw_rate_rad_s"], config.plan_max_dyaw * (1 + 1e-6))
+
+    def test_hard_retiming_accepts_a_bounded_initial_yaw_rate(self):
+        points = np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]])
+        yaw_points = np.array([0.0, 0.2])
+        config = planner.MincoOptimizationConfig(
+            plan_max_vel=0.6,
+            plan_max_acc=0.8,
+            plan_max_dyaw=0.5,
+        )
+
+        _, metrics, _, satisfied = planner._retime_to_hard_limits(
+            points,
+            yaw_points,
+            np.array([0.4]),
+            config,
+            yaw_rates=np.array([config.plan_max_dyaw, 0.0]),
+        )
+
+        self.assertTrue(satisfied)
+        self.assertLessEqual(metrics["max_yaw_rate_rad_s"], config.plan_max_dyaw * (1 + 1e-6))
 
     def test_cpp_analytic_time_gradient_matches_finite_difference(self):
         points = np.array([

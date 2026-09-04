@@ -5,6 +5,14 @@ goal_grasp_planner:
   yaw_tolerance: 0.1
   reach_timeout_seconds: 3.0
 
+# Evaluation consumes each model waypoint at 20 Hz, but follows it through a
+# causal velocity/acceleration limiter because raw predictions can contain
+# non-flyable jumps. Controller reference velocity and acceleration stay zero.
+waypoint_tracking:
+  max_velocity: 0.6
+  max_acceleration: 0.8
+  max_yaw_rate: 0.5
+
 # Task waypoints stay fixed. MINCO optimizes every positive segment duration.
 minco_optimization:
   enabled: true
@@ -43,6 +51,19 @@ root:
 gripper:
   joint_control_mode: drive
   disable_self_collision: true
+  # Expert demonstrations hold the reached pose while the physical fingers
+  # close. Evaluation applies actor attachment/release immediately on an action
+  # edge and does not use this duration.
+  grasp_hold_seconds: 0.8
+  # The box center may occupy a region larger than the fully closed fingertip
+  # center. Bounds are expressed from the gripper u_center frame.
+  grasp_validation:
+    # The training target is binary. Keep a small hysteresis around its 0.5
+    # decision boundary so noisy predictions do not chatter.
+    close_threshold: 0.50
+    open_threshold: 0.40
+    center_bounds_min: [0.00, -0.12, -0.15]
+    center_bounds_max: [0.20, 0.12, 0.10]
   drive:
     revolute:
       stiffness: 10.0

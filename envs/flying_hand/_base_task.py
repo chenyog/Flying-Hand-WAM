@@ -54,7 +54,7 @@ class FlyingHandBaseTask(gym.Env):
     grasp_to_pull_out_seconds = 1.3
     pull_out_to_place_seconds = 2.1
     release_to_retreat_seconds = pre_grasp_to_grasp_seconds
-    release_hold_seconds = 1.0
+    release_hold_seconds = 0.8
     flying_hand_black_color = [0.101960784313725, 0.101960784313725, 0.101960784313725, 1.0]
     flying_hand_silver_color = [0.8, 0.8, 0.8, 1.0]
     flying_hand_black_link_names = {
@@ -139,12 +139,11 @@ class FlyingHandBaseTask(gym.Env):
         self.cluttered_board = random_setting.get("cluttered_board", False)
         self.clean_background_rate = random_setting.get("clean_background_rate", 1)
         self.random_head_camera_dis = random_setting.get("random_head_camera_dis", 0)
-        self.random_board_height = random_setting.get("random_board_height", 0)
         self.random_light = random_setting.get("random_light", False)
         self.crazy_random_light_rate = random_setting.get("crazy_random_light_rate", 0)
         self.crazy_random_light = 0 if not self.random_light else np.random.rand() < self.crazy_random_light_rate
         self.random_flying_hand_init_pos = random_setting.get("random_flying_hand_init_pos", [0, 0, 0])
-        self.board_z_bias = np.random.uniform(-self.random_board_height, self.random_board_height) + table_height_bias
+        self.board_z_bias = float(table_height_bias)
         self.table_z_bias = self.board_z_bias
         self.clutter_object_count = int(np.random.randint(self.clutter_object_count_range[0], self.clutter_object_count_range[1] + 1))
         self.ground_texture = None
@@ -163,6 +162,8 @@ class FlyingHandBaseTask(gym.Env):
         self.take_action_cnt = 0
         self.instruction = None
         self.eval_video_ffmpeg = None
+        self.eval_video_frame_limit = None
+        self.eval_video_frames_written = 0
 
         self.setup_scene(**kwags)
         self.create_table_and_wall(table_xy_bias=table_xy_bias, table_height=0.74)
@@ -276,6 +277,41 @@ class FlyingHandBaseTask(gym.Env):
         self.flying_hand_black_link_names = set(material_config["black_link_names"])
         self.flying_hand_silver_link_names = set(material_config["silver_link_names"])
 
+        grasp_config = self.flying_hand_config["gripper"]["grasp_validation"]
+        center_min = np.asarray(grasp_config["center_bounds_min"], dtype=float)
+        center_max = np.asarray(grasp_config["center_bounds_max"], dtype=float)
+        if (
+            center_min.shape != (3,)
+            or center_max.shape != (3,)
+            or np.any(center_min >= center_max)
+        ):
+            raise ValueError("gripper grasp-validation center bounds must contain three increasing axes")
+        close_threshold = float(grasp_config["close_threshold"])
+        open_threshold = float(grasp_config["open_threshold"])
+        if not 0.0 <= open_threshold < close_threshold <= 1.0:
+            raise ValueError("gripper grasp thresholds must satisfy 0 <= open < close <= 1")
+        grasp_hold_seconds = float(self.flying_hand_config["gripper"]["grasp_hold_seconds"])
+        if grasp_hold_seconds <= 0.0:
+            raise ValueError("gripper grasp_hold_seconds must be positive")
+        self.grasp_hold_seconds = grasp_hold_seconds
+        self.release_hold_seconds = grasp_hold_seconds
+        self.flying_hand_grasp_validation = {
+            **grasp_config,
+            "center_bounds_min": center_min,
+            "center_bounds_max": center_max,
+        }
+        waypoint_config = self.flying_hand_config["waypoint_tracking"]
+        self.flying_hand_waypoint_tracking = {
+            key: float(waypoint_config[key])
+            for key in (
+                "max_velocity",
+                "max_acceleration",
+                "max_yaw_rate",
+            )
+        }
+        if any(value <= 0.0 for value in self.flying_hand_waypoint_tracking.values()):
+            raise ValueError("waypoint-tracking limits must be positive")
+
     def _update_render(self):
         if self.crazy_random_light:
             for light in self.point_light_lst:
@@ -321,7 +357,7 @@ class FlyingHandBaseTask(gym.Env):
             if xy is not None:
                 return qpos, int(slot_id), *xy, self.board_slots[int(slot_id)][1] - p["z_offset"]
 
-    def _get_actor_world_bounds(self, actor, default_size=(0.1, 0.1, 0.1)):
+    def _get_actor_world_corners(self, actor, default_size=(0.1, 0.1, 0.1)):
         data = getattr(actor, "config", None)
         if data is not None:
             center = np.array(data.get("center", [0.0, 0.0, 0.0]), dtype=float)
@@ -365,8 +401,47 @@ class FlyingHandBaseTask(gym.Env):
                     for z in [-half[2], half[2]]
                 ])
         mat = actor.get_pose().to_transformation_matrix()
-        corners = (mat[:3, :3] @ corners.T).T + mat[:3, 3]
+        return (mat[:3, :3] @ corners.T).T + mat[:3, 3]
+
+    def _get_actor_world_bounds(self, actor, default_size=(0.1, 0.1, 0.1)):
+        corners = self._get_actor_world_corners(actor, default_size=default_size)
         return np.array([corners.min(axis=0), corners.max(axis=0)])
+
+    def get_flying_hand_grasp_diagnostic(
+        self,
+        actor,
+        hand_pose=None,
+    ):
+        """Check whether an actor box center is inside the grasp region."""
+        root_pose = self.flying_hand.get_root_pose() if hand_pose is None else hand_pose
+        u_center_offset = self.flying_hand_config["root"]["u_center_offset"]
+        u_center_pose = root_pose * sapien.Pose(u_center_offset)
+        u_center_inverse = np.linalg.inv(u_center_pose.to_transformation_matrix())
+        world_corners = self._get_actor_world_corners(actor)
+        local_corners = (
+            u_center_inverse[:3, :3] @ world_corners.T
+        ).T + u_center_inverse[:3, 3]
+        actor_min = local_corners.min(axis=0)
+        actor_max = local_corners.max(axis=0)
+        actor_center = 0.5 * (actor_min + actor_max)
+
+        config = self.flying_hand_grasp_validation
+        center_min = config["center_bounds_min"]
+        center_max = config["center_bounds_max"]
+        center_inside = bool(
+            np.all(actor_center >= center_min)
+            and np.all(actor_center <= center_max)
+        )
+        return {
+            "actor": actor.get_name(),
+            "eligible": center_inside,
+            "center_inside": center_inside,
+            "actor_center_u": actor_center.tolist(),
+            "actor_bounds_min_u": actor_min.tolist(),
+            "actor_bounds_max_u": actor_max.tolist(),
+            "center_bounds_min_u": center_min.tolist(),
+            "center_bounds_max_u": center_max.tolist(),
+        }
 
     def _set_actor_bbox_center(self, actor, center):
         bounds = self._get_actor_world_bounds(actor)
@@ -413,6 +488,14 @@ class FlyingHandBaseTask(gym.Env):
 
     def add_task_objects(self, *actors):
         self.task_actors.extend(actors)
+
+    def get_flying_hand_grasp_candidates(self):
+        """Return movable task actors that the policy is allowed to capture."""
+        if hasattr(self, "graspable_actors"):
+            return tuple(self.graspable_actors)
+        if hasattr(self, "target_actor"):
+            return (self.target_actor,)
+        return tuple(self.task_actors)
 
     def _task_objects_safe(self):
         self.task_failed = self.task_failed or any(
@@ -739,7 +822,7 @@ class FlyingHandBaseTask(gym.Env):
             for name in cameras:
                 obs["observation"][name].update(rgb[name])
         self.now_obs = deepcopy(obs)
-        if self.eval_video_path is not None:
+        if self.eval_video_ffmpeg is not None:
             if isinstance(self.eval_video_ffmpeg, dict):
                 for video_camera, ffmpeg in self.eval_video_ffmpeg.items():
                     if video_camera in obs["observation"] and "rgb" in obs["observation"][video_camera]:
@@ -749,6 +832,12 @@ class FlyingHandBaseTask(gym.Env):
                 if video_camera not in obs["observation"]:
                     video_camera = next(iter(obs["observation"]))
                 self.eval_video_ffmpeg.stdin.write(obs["observation"][video_camera]["rgb"].tobytes())
+            self.eval_video_frames_written += 1
+            if (
+                self.eval_video_frame_limit is not None
+                and self.eval_video_frames_written >= self.eval_video_frame_limit
+            ):
+                self._del_eval_video_ffmpeg()
         return obs
 
     def _take_picture(self):

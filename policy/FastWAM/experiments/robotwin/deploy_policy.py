@@ -166,8 +166,6 @@ class WorldActionRobotWinPolicy:
         model_dtype: torch.dtype,
         action_horizon: int,
         replan_steps: int,
-        inference_latency_s: float,
-        action_execution_mode: str,
         num_inference_steps: int,
         sigma_shift: Optional[float],
         seed: Optional[int],
@@ -196,10 +194,6 @@ class WorldActionRobotWinPolicy:
 
         self.action_horizon = int(action_horizon)
         self.replan_steps = int(max(1, min(replan_steps, action_horizon)))
-        self.inference_latency_s = float(inference_latency_s)
-        self.action_execution_mode = str(action_execution_mode)
-        if self.action_execution_mode not in {"direct", "minco"}:
-            raise ValueError("`action_execution_mode` must be one of: direct, minco.")
         self.num_inference_steps = int(num_inference_steps)
         self.sigma_shift = sigma_shift
         self.seed = seed
@@ -221,12 +215,20 @@ class WorldActionRobotWinPolicy:
         self._lazy_text_encoder = None
         self._lazy_tokenizer = None
 
-        # Direct mode stores one [D] action per queue entry.  MINCO mode stores
-        # a contiguous [T, D] chunk so every predicted waypoint is retained.
+        # Keep each replan window contiguous so grasp edges and waypoint
+        # derivatives are evaluated in the model's original 20 Hz sequence.
         self.pending_actions: deque[np.ndarray] = deque()
         self.attached_actor = None
         self.attached_pose = None
-        self.grip_steps = 0
+        self.grasp_commanded = False
+        self.gripper_state = "open"
+        self.grasp_diagnostics = []
+        self.action_diagnostics = self._empty_action_diagnostics()
+        self.waypoint_diagnostics = []
+        self.flight_diagnostics = self._empty_flight_diagnostics()
+        self._waypoint_reference_position = None
+        self._waypoint_reference_velocity = np.zeros(3)
+        self._waypoint_reference_orientation = None
         self.episode_count = 0
         self.step_count = 0
         self._timing_rollout = {"infer_s": 0.0, "sim_s": 0.0}
@@ -364,26 +366,47 @@ class WorldActionRobotWinPolicy:
         root_to_imu_initial = initial_root_pose.inv() * initial_imu_odom_pose
         return initial_imu_odom_pose * relative_pose * root_to_imu_initial.inv()
 
-    @staticmethod
-    def _track_flying_hand_world_pose(task_env, target_pose, steps: int, carried_actor=None, carried_pose=None) -> None:
+    def _advance_flying_hand_reference(
+        self,
+        task_env,
+        target_pose,
+        target_velocity,
+        target_acceleration,
+        carried_actor=None,
+        carried_pose=None,
+    ) -> None:
         from envs.flying_hand import planner
 
-        zero = np.zeros(3)
-        for _ in range(steps):
-            task_env.flying_hand_ref_pose = target_pose
-            if task_env.enable_dynamics:
-                hand_pose, hand_v = task_env.flying_hand_dynamics.step(target_pose, zero, zero, task_env.is_grasping)
-                task_env.flying_hand.set_root_pose(hand_pose)
-                task_env.flying_hand.set_root_linear_velocity(hand_v.tolist())
-                task_env.flying_hand.set_root_angular_velocity(task_env.flying_hand_dynamics.w.tolist())
-            else:
-                hand_pose, hand_v = target_pose, zero
-                planner.set_pose(task_env, hand_pose, hand_v)
-            carried_pose_fn = None
-            if carried_actor is not None:
-                actor_pose = hand_pose * carried_pose
-                carried_pose_fn = lambda actor=carried_actor, pose=actor_pose, vel=hand_v: (actor, pose, vel)
-            planner.step(task_env, 1, save_freq=None, carried_pose_fn=carried_pose_fn)
+        if carried_actor is not None:
+            planner.begin_isolated_carry(task_env, carried_actor)
+        task_env.flying_hand_ref_pose = target_pose
+        if task_env.enable_dynamics:
+            hand_pose, hand_v = task_env.flying_hand_dynamics.step(
+                target_pose,
+                target_velocity,
+                target_acceleration,
+                task_env.is_grasping,
+            )
+            task_env.flying_hand.set_root_pose(hand_pose)
+            task_env.flying_hand.set_root_linear_velocity(hand_v.tolist())
+            task_env.flying_hand.set_root_angular_velocity(
+                task_env.flying_hand_dynamics.w.tolist()
+            )
+        else:
+            hand_pose, hand_v = target_pose, np.asarray(target_velocity, dtype=float)
+            planner.set_pose(task_env, hand_pose, hand_v)
+        if carried_actor is not None:
+            planner.set_isolated_carried_actor_target(
+                task_env,
+                carried_actor,
+                hand_pose * carried_pose,
+            )
+        planner.step(
+            task_env,
+            1,
+            save_freq=None,
+            step_callback=self._record_flight_sample,
+        )
 
     def _build_image_array(self, observation: Dict[str, Any]) -> np.ndarray:
         obs_data = observation["observation"]
@@ -472,96 +495,397 @@ class WorldActionRobotWinPolicy:
 
     def _fill_action_queue(self, task_env, observation: Dict[str, Any], instruction: str) -> None:
         action_chunk = self._infer_action_chunk(observation=observation, instruction=instruction)
-        n = min(
-            action_chunk.shape[0],
-            self.replan_steps + int(np.ceil(self.inference_latency_s / (task_env.save_freq * task_env.sim_timestep))),
-        )
-        if self.action_execution_mode == "minco":
-            # Keep the full latency-compensated horizon.  Reducing this to only
-            # action_chunk[n - 1] changes the policy semantics into a single
-            # long current-to-endpoint motion and discards waypoint/gripper
-            # timing information.
-            self.pending_actions.append((np.asarray(action_chunk[:n], dtype=np.float32), n))
-        else:
-            for i in range(n):
-                self.pending_actions.append((np.asarray(action_chunk[i], dtype=np.float32), 1))
+        # In this evaluator inference is synchronous: SAPIEN is paused while
+        # the model runs.  Wall-clock inference latency therefore must not add
+        # extra open-loop simulation actions.
+        n = min(action_chunk.shape[0], self.replan_steps)
+        self.pending_actions.append(np.asarray(action_chunk[:n], dtype=np.float32))
 
     @staticmethod
-    def _split_flying_hand_actions_by_grasp(actions: np.ndarray) -> list[np.ndarray]:
-        """Split a MINCO chunk where the commanded binary gripper state changes."""
-        if len(actions) == 0:
-            return []
-        grasp = actions[:, 4] >= 0.5
-        boundaries = np.flatnonzero(grasp[1:] != grasp[:-1]) + 1
-        return np.split(actions, boundaries)
+    def _empty_flight_diagnostics() -> Dict[str, Any]:
+        return {
+            "samples": 0,
+            "max_abs_roll_rad": 0.0,
+            "max_abs_pitch_rad": 0.0,
+            "max_abs_pitch_rate_rad_s": 0.0,
+            "max_abs_bodyrate_rad_s": [0.0, 0.0, 0.0],
+            "rotor_saturation_samples": 0,
+            "large_pitch_excursions": 0,
+            "large_pitch_events": [],
+            "_large_pitch_active": False,
+            "max_position_error_m": 0.0,
+        }
 
-    def _attach_nearest_task_actor(self, task_env) -> None:
+    @staticmethod
+    def _empty_action_diagnostics() -> Dict[str, Any]:
+        return {
+            "samples": 0,
+            "grasp_min": None,
+            "grasp_max": None,
+            "above_close_threshold": 0,
+            "below_open_threshold": 0,
+            "chunk_grasp_ranges": [],
+        }
+
+    def _record_action_chunk(self, task_env, actions: np.ndarray) -> None:
+        values = np.asarray(actions[:, 4], dtype=float)
+        if values.size == 0:
+            return
+        close_threshold = float(task_env.flying_hand_grasp_validation["close_threshold"])
+        open_threshold = float(task_env.flying_hand_grasp_validation["open_threshold"])
+        diagnostics = self.action_diagnostics
+        diagnostics["samples"] += int(values.size)
+        chunk_min = float(values.min())
+        chunk_max = float(values.max())
+        diagnostics["grasp_min"] = (
+            chunk_min
+            if diagnostics["grasp_min"] is None
+            else min(diagnostics["grasp_min"], chunk_min)
+        )
+        diagnostics["grasp_max"] = (
+            chunk_max
+            if diagnostics["grasp_max"] is None
+            else max(diagnostics["grasp_max"], chunk_max)
+        )
+        diagnostics["above_close_threshold"] += int(np.count_nonzero(values >= close_threshold))
+        diagnostics["below_open_threshold"] += int(np.count_nonzero(values <= open_threshold))
+        diagnostics["chunk_grasp_ranges"].append([chunk_min, chunk_max])
+
+    def _record_flight_sample(self, task_env) -> None:
+        q = np.asarray(task_env.flying_hand.get_root_pose().q, dtype=float)
+        angular_velocity = np.asarray(
+            task_env.flying_hand.get_root_angular_velocity(),
+            dtype=float,
+        )
+        w, x, y, z = q
+        roll = np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+        pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+        diagnostics = self.flight_diagnostics
+        diagnostics["samples"] += 1
+        diagnostics["max_abs_roll_rad"] = max(diagnostics["max_abs_roll_rad"], abs(float(roll)))
+        diagnostics["max_abs_pitch_rad"] = max(diagnostics["max_abs_pitch_rad"], abs(float(pitch)))
+        pitch_rate = abs(float(angular_velocity[1]))
+        diagnostics["max_abs_pitch_rate_rad_s"] = max(
+            diagnostics["max_abs_pitch_rate_rad_s"],
+            pitch_rate,
+        )
+        diagnostics["max_abs_bodyrate_rad_s"] = np.maximum(
+            np.asarray(diagnostics["max_abs_bodyrate_rad_s"], dtype=float),
+            np.abs(angular_velocity),
+        ).tolist()
+        dynamics = getattr(task_env, "flying_hand_dynamics", None)
+        dynamics_debug = getattr(dynamics, "debug", {})
+        rotor_thrust = np.asarray(dynamics_debug.get("rotor_thrust", []), dtype=float)
+        if rotor_thrust.size and dynamics is not None:
+            at_min = rotor_thrust <= dynamics.thrust_min + 1e-8
+            at_max = rotor_thrust >= dynamics.thrust_max - 1e-8
+            diagnostics["rotor_saturation_samples"] += int(np.any(at_min | at_max))
+        # Count distinct entries into a large-pitch region. A lower exit
+        # threshold prevents one noisy excursion from being counted repeatedly.
+        if not diagnostics["_large_pitch_active"] and abs(pitch) >= np.deg2rad(15.0):
+            diagnostics["large_pitch_excursions"] += 1
+            diagnostics["_large_pitch_active"] = True
+            if len(diagnostics["large_pitch_events"]) < 20:
+                actual_pose = task_env.flying_hand.get_root_pose()
+                ref_pose = task_env.flying_hand_ref_pose
+                diagnostics["large_pitch_events"].append({
+                    "sample": int(diagnostics["samples"]),
+                    "action_step": int(task_env.take_action_cnt),
+                    "roll_deg": float(np.degrees(roll)),
+                    "pitch_deg": float(np.degrees(pitch)),
+                    "bodyrate_rad_s": angular_velocity.tolist(),
+                    "actual_position": np.asarray(actual_pose.p, dtype=float).tolist(),
+                    "reference_position": (
+                        np.asarray(ref_pose.p, dtype=float).tolist()
+                        if ref_pose is not None
+                        else None
+                    ),
+                    "grasping": bool(task_env.is_grasping),
+                    "attached_actor": (
+                        self.attached_actor.get_name()
+                        if self.attached_actor is not None
+                        else None
+                    ),
+                    "rotor_thrust": rotor_thrust.tolist(),
+                    "torque_command": np.asarray(
+                        dynamics_debug.get("torque_command", []),
+                        dtype=float,
+                    ).tolist(),
+                    "torque_applied": np.asarray(
+                        dynamics_debug.get("torque_applied", []),
+                        dtype=float,
+                    ).tolist(),
+                    "desired_bodyrates": np.asarray(
+                        dynamics_debug.get("desired_bodyrates", []),
+                        dtype=float,
+                    ).tolist(),
+                    "torque_l1": np.asarray(
+                        dynamics_debug.get("torque_l1", []),
+                        dtype=float,
+                    ).tolist(),
+                })
+        elif diagnostics["_large_pitch_active"] and abs(pitch) <= np.deg2rad(10.0):
+            diagnostics["_large_pitch_active"] = False
+        # The outer evaluator observes only once per replan chunk. Capture
+        # simulation-time frames here so videos show waypoint and gripper
+        # motion rather than only the replan observations.
+        if (
+            task_env.eval_video_ffmpeg is not None
+            and task_env.flying_hand_save_step % int(task_env.save_freq) == 0
+        ):
+            task_env.get_obs()
+        if task_env.flying_hand_ref_pose is not None:
+            position_error = np.linalg.norm(
+                np.asarray(task_env.flying_hand_ref_pose.p, dtype=float)
+                - np.asarray(task_env.flying_hand.get_root_pose().p, dtype=float)
+            )
+            diagnostics["max_position_error_m"] = max(
+                diagnostics["max_position_error_m"],
+                float(position_error),
+            )
+
+    def _grasp_states(self, task_env, actions: np.ndarray) -> np.ndarray:
+        config = task_env.flying_hand_grasp_validation
+        close_threshold = float(config["close_threshold"])
+        open_threshold = float(config["open_threshold"])
+        state = bool(self.grasp_commanded)
+        states = []
+        for value in np.asarray(actions[:, 4], dtype=float):
+            if state:
+                state = value > open_threshold
+            else:
+                state = value >= close_threshold
+            states.append(state)
+        return np.asarray(states, dtype=bool)
+
+    def _attach_actor_in_grasp_space(self, task_env, event: Dict[str, Any]) -> bool:
         from envs.utils.actor_utils import Actor
 
-        hand_pose = task_env.flying_hand.get_root_pose()
-        self.attached_actor = min(
-            [actor for actor in task_env.task_actors if type(actor) is Actor],
-            key=lambda actor: np.linalg.norm(actor.get_pose().p - hand_pose.p),
-        )
-        self.attached_pose = hand_pose.inv() * self.attached_actor.get_pose()
+        candidates = []
+        actor_diagnostics = []
+        for actor in task_env.get_flying_hand_grasp_candidates():
+            if not isinstance(actor, Actor):
+                continue
+            diagnostic = task_env.get_flying_hand_grasp_diagnostic(actor)
+            actor_diagnostics.append(diagnostic)
+            if diagnostic["eligible"]:
+                candidates.append((np.linalg.norm(diagnostic["actor_center_u"]), actor))
+        event["actors"] = actor_diagnostics
+        if not candidates:
+            event["attachment"] = "rejected_box_center_outside_grasp_region"
+            return False
 
-    def _set_flying_hand_grasp(self, task_env, grasp: bool) -> None:
-        task_env.set_flying_hand_gripper(
-            task_env.flying_hand_config["gripper"]["close_qpos" if grasp else "open_qpos"],
-            is_grasp=grasp,
-        )
-        if not grasp:
-            self.grip_steps = 0
+        _, self.attached_actor = min(candidates, key=lambda item: item[0])
+        hand_pose = task_env.flying_hand.get_root_pose()
+        self.attached_pose = hand_pose.inv() * self.attached_actor.get_pose()
+        event["attachment"] = "attached"
+        event["attached_actor"] = self.attached_actor.get_name()
+        return True
+
+    def _apply_flying_hand_grasp_command(
+        self,
+        task_env,
+        grasp: bool,
+        *,
+        action_step: int,
+    ) -> None:
+        """Apply actor attachment or release immediately at a 20 Hz action edge."""
+        event = {
+            "event": "close" if grasp else "open",
+            "action_step": int(action_step),
+            "completed": True,
+            "command_latency_seconds": 0.0,
+        }
+        self.grasp_diagnostics.append(event)
+        self.grasp_commanded = bool(grasp)
+        if grasp:
+            task_env.set_flying_hand_gripper(
+                task_env.flying_hand_config["gripper"]["close_qpos"],
+                is_grasp=True,
+            )
+            event["gripper_close_commanded"] = True
+            if self._attach_actor_in_grasp_space(task_env, event):
+                self.gripper_state = "grasping_attached"
+            else:
+                self.gripper_state = "grasping_empty"
+        else:
+            event["released"] = self.attached_actor is not None
+            task_env.set_flying_hand_gripper(
+                task_env.flying_hand_config["gripper"]["open_qpos"],
+                is_grasp=False,
+            )
             self.attached_actor = None
             self.attached_pose = None
+            self.gripper_state = "open"
+            event["gripper_open_commanded"] = True
 
-    def _move_flying_hand_minco(self, task_env, actions: np.ndarray) -> None:
-        """Track all action waypoints at the task action interval with MINCO."""
-        from envs.flying_hand import planner
+    @staticmethod
+    def _limit_vector_norm(vector: np.ndarray, limit: float) -> np.ndarray:
+        norm = float(np.linalg.norm(vector))
+        if norm <= limit or norm == 0.0:
+            return vector
+        return vector * (limit / norm)
+
+    def _reset_waypoint_reference(self, task_env, pose=None) -> None:
+        pose = task_env.flying_hand.get_root_pose() if pose is None else pose
+        self._waypoint_reference_position = np.asarray(pose.p, dtype=float).copy()
+        self._waypoint_reference_velocity = np.zeros(3)
+        self._waypoint_reference_orientation = np.asarray(pose.q, dtype=float).copy()
+
+    @staticmethod
+    def _slerp_towards(
+        current: np.ndarray,
+        target: np.ndarray,
+        max_angle: float,
+    ) -> np.ndarray:
+        """Move a unit quaternion toward ``target`` by at most ``max_angle``."""
+        current = np.asarray(current, dtype=float)
+        target = np.asarray(target, dtype=float)
+        current /= np.linalg.norm(current)
+        target /= np.linalg.norm(target)
+        dot = float(np.dot(current, target))
+        if dot < 0.0:
+            target = -target
+            dot = -dot
+        dot = float(np.clip(dot, -1.0, 1.0))
+        angle = 2.0 * float(np.arccos(dot))
+        if angle <= max_angle or angle < 1.0e-9:
+            return target
+        fraction = max_angle / angle
+        half_angle = 0.5 * angle
+        sin_half_angle = float(np.sin(half_angle))
+        if sin_half_angle < 1.0e-9:
+            result = (1.0 - fraction) * current + fraction * target
+        else:
+            result = (
+                np.sin((1.0 - fraction) * half_angle) / sin_half_angle * current
+                + np.sin(fraction * half_angle) / sin_half_angle * target
+            )
+        return result / np.linalg.norm(result)
+
+    def _track_flying_hand_waypoints(
+        self,
+        task_env,
+        actions: np.ndarray,
+        grasp_states: Optional[np.ndarray] = None,
+    ) -> None:
+        """Track each 20 Hz model waypoint through a causal, non-optimizing limiter."""
+        import sapien
 
         if len(actions) == 0:
             return
-        poses = [task_env.flying_hand.get_root_pose()]
-        poses.extend(self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action) for action in actions)
-        action_dt = float(task_env.save_freq) * float(task_env.sim_timestep)
-        planner.move_minco(
-            task_env,
-            poses,
-            times=np.full(len(actions), action_dt, dtype=float),
-            # A frame is emitted at precisely the same 20 Hz action cadence as
-            # direct mode, rather than only at the outer replan boundary.
-            save_freq=int(task_env.save_freq),
-            carried_actor=self.attached_actor,
-            carried_pose=self.attached_pose,
+        steps = int(task_env.save_freq)
+        sim_dt = float(task_env.sim_timestep)
+        action_dt = steps * sim_dt
+        limits = task_env.flying_hand_waypoint_tracking
+        max_velocity = float(limits["max_velocity"])
+        max_acceleration = float(limits["max_acceleration"])
+        max_yaw_rate = float(limits["max_yaw_rate"])
+        poses = [
+            self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action)
+            for action in actions
+        ]
+        if self._waypoint_reference_position is None:
+            self._reset_waypoint_reference(task_env)
+        previous_raw_position = np.asarray(
+            task_env.flying_hand.get_root_pose().p,
+            dtype=float,
         )
+        max_waypoint_spacing = 0.0
+        max_reference_velocity = 0.0
+        max_reference_acceleration = 0.0
+        max_reference_lag = 0.0
+        if grasp_states is not None and len(grasp_states) != len(actions):
+            raise ValueError("grasp_states must contain one state per waypoint")
+        for action_index, target_pose in enumerate(poses):
+            if (
+                grasp_states is not None
+                and bool(grasp_states[action_index]) != self.grasp_commanded
+            ):
+                self._apply_flying_hand_grasp_command(
+                    task_env,
+                    bool(grasp_states[action_index]),
+                    action_step=int(task_env.take_action_cnt + action_index),
+                )
+            target_position = np.asarray(target_pose.p, dtype=float)
+            max_waypoint_spacing = max(
+                max_waypoint_spacing,
+                float(np.linalg.norm(target_position - previous_raw_position)),
+            )
+            previous_raw_position = target_position
+            target_orientation = np.asarray(target_pose.q, dtype=float)
+            for substep in range(steps):
+                remaining_time = max((steps - substep) * sim_dt, sim_dt)
+                desired_velocity = self._limit_vector_norm(
+                    (target_position - self._waypoint_reference_position) / remaining_time,
+                    max_velocity,
+                )
+                velocity_change = self._limit_vector_norm(
+                    desired_velocity - self._waypoint_reference_velocity,
+                    max_acceleration * sim_dt,
+                )
+                self._waypoint_reference_velocity += velocity_change
+                self._waypoint_reference_velocity = self._limit_vector_norm(
+                    self._waypoint_reference_velocity,
+                    max_velocity,
+                )
+                self._waypoint_reference_position += self._waypoint_reference_velocity * sim_dt
+                self._waypoint_reference_orientation = self._slerp_towards(
+                    self._waypoint_reference_orientation,
+                    target_orientation,
+                    max_yaw_rate * sim_dt,
+                )
+                reference_pose = sapien.Pose(
+                    self._waypoint_reference_position.tolist(),
+                    self._waypoint_reference_orientation.tolist(),
+                )
+                self._advance_flying_hand_reference(
+                    task_env,
+                    reference_pose,
+                    # Velocity is internal to the position-rate limiter only.
+                    # The flight controller intentionally receives zero desired
+                    # velocity/acceleration and tracks the bounded pose target.
+                    np.zeros(3),
+                    np.zeros(3),
+                    self.attached_actor,
+                    self.attached_pose,
+                )
+                max_reference_velocity = max(
+                    max_reference_velocity,
+                    float(np.linalg.norm(self._waypoint_reference_velocity)),
+                )
+                max_reference_acceleration = max(
+                    max_reference_acceleration,
+                    float(np.linalg.norm(velocity_change) / sim_dt),
+                )
+                max_reference_lag = max(
+                    max_reference_lag,
+                    float(np.linalg.norm(target_position - self._waypoint_reference_position)),
+                )
 
-    def _execute_flying_hand_minco_chunk(self, task_env, actions: np.ndarray) -> None:
-        """Execute a predicted chunk without losing trajectory or gripper timing."""
-        action_dt = float(task_env.save_freq) * float(task_env.sim_timestep)
-        hold_actions = max(1, int(np.ceil(task_env.grasp_hold_seconds / action_dt)))
+        self.waypoint_diagnostics.append({
+            "segments": int(len(actions)),
+            "samples": int(len(actions) * steps),
+            "duration_seconds": float(len(actions) * action_dt),
+            "max_waypoint_spacing_m": max_waypoint_spacing,
+            "max_reference_velocity_mps": max_reference_velocity,
+            "max_reference_acceleration_mps2": max_reference_acceleration,
+            "max_reference_lag_m": max_reference_lag,
+            "interpolation": "causal_slew_limited_position_reference",
+        })
 
-        for segment in self._split_flying_hand_actions_by_grasp(actions):
-            grasp = bool(segment[0, 4] >= 0.5)
-            self._set_flying_hand_grasp(task_env, grasp)
-            if not grasp or self.attached_actor is not None:
-                self._move_flying_hand_minco(task_env, segment)
-                if grasp:
-                    self.grip_steps += len(segment)
-                continue
-
-            # Match direct mode's grasp-hold semantics.  Until the object is
-            # attached, execute the corresponding prefix without carrying it;
-            # the remainder of this same MINCO segment then carries the object.
-            before_attach = max(0, hold_actions - self.grip_steps)
-            prefix_len = min(len(segment), before_attach)
-            if prefix_len:
-                self._move_flying_hand_minco(task_env, segment[:prefix_len])
-                self.grip_steps += prefix_len
-            if self.grip_steps >= hold_actions and self.attached_actor is None:
-                self._attach_nearest_task_actor(task_env)
-            if prefix_len < len(segment):
-                self._move_flying_hand_minco(task_env, segment[prefix_len:])
-                self.grip_steps += len(segment) - prefix_len
+    def _execute_flying_hand_waypoint_chunk(self, task_env, actions: np.ndarray) -> int:
+        """Track a full fixed-cadence chunk and apply gripper edges immediately."""
+        if len(actions) == 0:
+            return 0
+        states = self._grasp_states(task_env, actions)
+        self._record_action_chunk(task_env, actions)
+        self._track_flying_hand_waypoints(
+            task_env,
+            actions,
+            grasp_states=states,
+        )
+        return int(len(actions))
 
     def should_request_observation(self) -> bool:
         return not self.pending_actions
@@ -580,28 +904,15 @@ class WorldActionRobotWinPolicy:
             logger.warning("No action generated; skip current eval step.")
             return
 
-        action, action_steps = self.pending_actions.popleft()
+        action = self.pending_actions.popleft()
         sim_t0 = time.perf_counter() if self.timing_enabled else 0.0
-        if action.ndim == 2:
-            if action.shape[1] != 5:
-                raise ValueError(f"Expected flying-hand MINCO action chunk [T, 5], got {tuple(action.shape)}")
-            self._execute_flying_hand_minco_chunk(task_env, action)
-            task_env.take_action_cnt += int(action_steps)
-            task_env.eval_success = task_env.check_success()
-        elif action.shape[0] == 5:
-            steps = int(task_env.save_freq) * int(action_steps)
-            grasp = action[4] >= 0.5
-            self._set_flying_hand_grasp(task_env, grasp)
-            if grasp:
-                self.grip_steps += 1
-                if self.attached_actor is None and self.grip_steps >= int(np.ceil(task_env.grasp_hold_seconds / (steps * task_env.sim_timestep))):
-                    self._attach_nearest_task_actor(task_env)
-            target_pose = self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action)
-            self._track_flying_hand_world_pose(task_env, target_pose, steps, self.attached_actor, self.attached_pose)
-            task_env.take_action_cnt += int(action_steps)
-            task_env.eval_success = task_env.check_success()
-        else:
-            task_env.take_action(action, action_type="qpos")
+        if action.ndim != 2 or action.shape[1] != 5:
+            raise ValueError(
+                f"Expected flying-hand waypoint chunk [T, 5], got {tuple(action.shape)}"
+            )
+        consumed_actions = self._execute_flying_hand_waypoint_chunk(task_env, action)
+        task_env.take_action_cnt += consumed_actions
+        task_env.eval_success = task_env.check_success()
         if self.timing_enabled:
             self._timing_rollout["sim_s"] += time.perf_counter() - sim_t0
         self.step_count += 1
@@ -616,11 +927,35 @@ class WorldActionRobotWinPolicy:
             "sim_s": float(self._timing_rollout["sim_s"]),
         }
 
+    def get_episode_diagnostics(self) -> Dict[str, Any]:
+        flight = dict(self.flight_diagnostics)
+        flight.pop("_large_pitch_active", None)
+        flight["max_abs_roll_deg"] = float(np.degrees(flight["max_abs_roll_rad"]))
+        flight["max_abs_pitch_deg"] = float(np.degrees(flight["max_abs_pitch_rad"]))
+        return {
+            "flight": flight,
+            "actions": dict(self.action_diagnostics),
+            "gripper": {
+                "state": self.gripper_state,
+                "transition_pending": False,
+            },
+            "grasp_events": list(self.grasp_diagnostics),
+            "waypoint_tracking": list(self.waypoint_diagnostics),
+        }
+
     def reset(self) -> None:
         self.pending_actions.clear()
         self.attached_actor = None
         self.attached_pose = None
-        self.grip_steps = 0
+        self.grasp_commanded = False
+        self.gripper_state = "open"
+        self.grasp_diagnostics = []
+        self.action_diagnostics = self._empty_action_diagnostics()
+        self.waypoint_diagnostics = []
+        self.flight_diagnostics = self._empty_flight_diagnostics()
+        self._waypoint_reference_position = None
+        self._waypoint_reference_velocity = np.zeros(3)
+        self._waypoint_reference_orientation = None
         self.episode_count += 1
         self.step_count = 0
         self.reset_timing_rollout()
@@ -666,11 +1001,6 @@ def get_model(usr_args: Dict[str, Any]):
     replan_steps = _parse_optional_int(usr_args.get("replan_steps"))
     if replan_steps is None:
         replan_steps = int(cfg.EVALUATION.get("replan_steps", 8))
-    inference_latency_s = _parse_optional_float(usr_args.get("inference_latency_s"))
-    if inference_latency_s is None:
-        inference_latency_s = float(cfg.EVALUATION.get("inference_latency_s", 0.0))
-    action_execution_mode = str(usr_args.get("action_execution_mode", cfg.EVALUATION.get("action_execution_mode", "direct")))
-
     num_inference_steps = _parse_optional_int(usr_args.get("num_inference_steps"))
     if num_inference_steps is None:
         num_inference_steps = int(cfg.EVALUATION.get("num_inference_steps", cfg.eval_num_inference_steps))
@@ -698,8 +1028,6 @@ def get_model(usr_args: Dict[str, Any]):
         model_dtype=model_dtype,
         action_horizon=action_horizon,
         replan_steps=replan_steps,
-        inference_latency_s=inference_latency_s,
-        action_execution_mode=action_execution_mode,
         num_inference_steps=num_inference_steps,
         sigma_shift=sigma_shift,
         seed=seed,

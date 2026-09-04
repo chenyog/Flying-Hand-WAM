@@ -43,6 +43,7 @@ class move_can_pot(FlyingHandBaseTask):
         self.pot.config["center"] = ((np.array(bbox["min"]) + np.array(bbox["max"])) / 2).tolist()
         self.add_task_objects(self.pot)
         self.can = self._create_board_actor(self.can_name, self.can_id, self.can_slot_id, mass=0.1, qpos=self.can_qpos)
+        self.graspable_actors = [self.can]
 
         self._place_actor_on_shelf(self.pot, self.pot_slot_id)
         pot_half = (self._get_actor_world_bounds(self.pot)[1] - self._get_actor_world_bounds(self.pot)[0])[:2] / 2

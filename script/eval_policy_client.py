@@ -309,9 +309,7 @@ def main(usr_args):
     print("\033[95mRandom Light:\033[0m " + str(args["domain_randomization"]["random_light"]))
     if args["domain_randomization"]["random_light"]:
         print(" - Crazy Random Light Rate: " + str(args["domain_randomization"]["crazy_random_light_rate"]))
-    if "flying-hand" in embodiment_type:
-        print("\033[95mRandom Board Height:\033[0m " + str(args["domain_randomization"]["random_board_height"]))
-    else:
+    if "random_table_height" in args["domain_randomization"]:
         print("\033[95mRandom Table Height:\033[0m " + str(args["domain_randomization"]["random_table_height"]))
     print("\033[95mRandom Head Camera Distance:\033[0m " + str(args["domain_randomization"]["random_head_camera_dis"]))
 

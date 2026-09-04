@@ -125,6 +125,11 @@ def _begin_isolated_carry(env, actor):
         component.disable()
 
 
+def begin_isolated_carry(env, actor):
+    """Start the supported isolated-carry mode for an already validated actor."""
+    _begin_isolated_carry(env, actor)
+
+
 def _set_isolated_actor_pose(actor, pose):
     actor.actor.set_pose(pose)
     for component in _dynamic_components(actor):
@@ -166,10 +171,20 @@ def restore_isolated_carried_actor(env, suppress_gripper_collisions=False):
     env._isolated_carried_actor_state = None
 
 
-def step(env, n, save_freq=-1):
+def step(env, n, save_freq=-1, step_callback=None):
     for _ in range(n):
         env.apply_flying_hand_gripper_qpos()
         env.scene.step()
+        if env.enable_dynamics:
+            # The floating articulation root is governed by the analytical
+            # flight dynamics. PhysX is still required for gripper joints and
+            # actor contacts, but it must not integrate the same root a second
+            # time (especially with collision impulses) after the controller
+            # has already advanced it for this simulation step.
+            dynamics = env.flying_hand_dynamics
+            env.flying_hand.set_root_pose(sapien.Pose(dynamics.p.tolist(), dynamics.q.tolist()))
+            env.flying_hand.set_root_linear_velocity(dynamics.v.tolist())
+            env.flying_hand.set_root_angular_velocity(dynamics.w.tolist())
         if (
             env._released_actor_collision_state is not None
             and not env.is_grasping
@@ -177,6 +192,8 @@ def step(env, n, save_freq=-1):
         ):
             restore_released_actor_collisions(env)
         env._task_objects_safe()
+        if step_callback is not None:
+            step_callback(env)
         env.flying_hand_save_step += 1
         if env.render_freq and env.flying_hand_save_step % env.render_freq == 0:
             env._update_render()
@@ -184,7 +201,7 @@ def step(env, n, save_freq=-1):
         env._save_flying_hand_frame(save_freq)
 
 
-def hold(env, pose, steps, save_freq=-1):
+def hold(env, pose, steps, save_freq=-1, step_callback=None):
     for _ in range(steps):
         if env.enable_dynamics:
             env.flying_hand_ref_pose = pose
@@ -200,7 +217,7 @@ def hold(env, pose, steps, save_freq=-1):
             env.flying_hand.set_root_angular_velocity(env.flying_hand_dynamics.w.tolist())
         else:
             set_pose(env, pose)
-        step(env, 1, save_freq=save_freq)
+        step(env, 1, save_freq=save_freq, step_callback=step_callback)
 
 
 def _position_coefficients(points, times):
@@ -303,6 +320,8 @@ class MincoOptimizationResult:
     metrics: dict
     backend: str
     optimization_wall_time_seconds: float
+    safety_time_scale: float = 1.0
+    limits_satisfied: bool = True
 
     def as_dict(self):
         result = asdict(self)
@@ -408,6 +427,53 @@ def _trajectory_metrics(
     }
 
 
+def _retime_to_hard_limits(points, yaw_points, times, config, yaw_rates=None):
+    """Uniformly stretch a MINCO trajectory until sampled limits are satisfied.
+
+    The C++ objective uses smooth penalties for velocity, acceleration, and yaw
+    rate.  Policy-generated waypoints can be far outside the training cadence,
+    so a final deterministic retiming pass prevents a finite penalty from
+    accepting an unsafe high-acceleration trajectory.
+    """
+    safe_times = np.asarray(times, dtype=float).copy()
+    total_scale = 1.0
+    for _ in range(4):
+        metrics = _trajectory_metrics(
+            points,
+            yaw_points,
+            safe_times,
+            config.K,
+            yaw_rates=yaw_rates,
+        )
+        scale = max(
+            1.0,
+            metrics["max_velocity_mps"] / config.plan_max_vel,
+            np.sqrt(metrics["max_acceleration_mps2"] / config.plan_max_acc),
+            metrics["max_yaw_rate_rad_s"] / config.plan_max_dyaw,
+        )
+        if scale <= 1.0 + 1e-6:
+            return safe_times, metrics, total_scale, True
+        # A small margin avoids landing immediately outside a sampled limit due
+        # to floating-point roundoff when coefficients are regenerated.
+        scale *= 1.01
+        safe_times *= scale
+        total_scale *= scale
+
+    metrics = _trajectory_metrics(
+        points,
+        yaw_points,
+        safe_times,
+        config.K,
+        yaw_rates=yaw_rates,
+    )
+    limits_satisfied = bool(
+        metrics["max_velocity_mps"] <= config.plan_max_vel * (1.0 + 1e-6)
+        and metrics["max_acceleration_mps2"] <= config.plan_max_acc * (1.0 + 1e-6)
+        and metrics["max_yaw_rate_rad_s"] <= config.plan_max_dyaw * (1.0 + 1e-6)
+    )
+    return safe_times, metrics, total_scale, limits_satisfied
+
+
 class MincoTimeOptimizer:
     """Optimize positive MINCO segment durations while fixing all waypoints."""
 
@@ -490,17 +556,24 @@ class MincoTimeOptimizer:
         if success:
             final_times = candidate_times
             final_cost = float(result["final_cost"])
-            final_metrics = _trajectory_metrics(
-                points,
-                yaw_points,
-                candidate_times,
-                self.config.K,
-                yaw_rates=yaw_rates,
-            )
         else:
             final_times = initial_times
             final_cost = float(result["initial_cost"])
-            final_metrics = initial_metrics
+        final_times, final_metrics, safety_time_scale, limits_satisfied = (
+            _retime_to_hard_limits(
+                points,
+                yaw_points,
+                final_times,
+                self.config,
+                yaw_rates=yaw_rates,
+            )
+        )
+        if not limits_satisfied:
+            success = False
+            result["message"] = (
+                f"{result['message']}; hard trajectory limits remain violated "
+                "after safety retiming"
+            )
         return MincoOptimizationResult(
             times=final_times,
             initial_times=initial_times,
@@ -515,6 +588,8 @@ class MincoTimeOptimizer:
             metrics=final_metrics,
             backend=str(_minco_cpp.backend_name),
             optimization_wall_time_seconds=float(result["wall_time_seconds"]),
+            safety_time_scale=safety_time_scale,
+            limits_satisfied=limits_satisfied,
         )
 
 
@@ -563,6 +638,7 @@ def plan_and_move_minco(
     carried_actor=None,
     carried_pose=None,
     phase_name=None,
+    step_callback=None,
 ):
     """Optimize task-path segment times, then execute the resulting MINCO path."""
     if len(poses) < 2:
@@ -580,9 +656,18 @@ def plan_and_move_minco(
     start_yaw_error = abs(
         _angle_error(_quaternion_yaw(actual_start.q), _quaternion_yaw(requested_start.q))
     )
-    initial_yaw_rate = (
+    measured_initial_yaw_rate = (
         float(env.flying_hand_dynamics.w[2]) if env.enable_dynamics else 0.0
     )
+    # A disturbed vehicle can enter replanning above the configured reference
+    # yaw-rate limit. Such a boundary derivative cannot be repaired by time
+    # scaling, so bound the new reference while retaining the measured value in
+    # diagnostics. The controller then decelerates from the measured state.
+    initial_yaw_rate = float(np.clip(
+        measured_initial_yaw_rate,
+        -config.plan_max_dyaw,
+        config.plan_max_dyaw,
+    ))
     dense_poses = _densify_plan(poses, config)
     result = env.minco_time_optimizer.optimize(
         dense_poses,
@@ -602,6 +687,7 @@ def plan_and_move_minco(
         "legacy_time_hints": time_hints.tolist(),
         "start_position_error_m": start_position_error,
         "start_yaw_error_rad": start_yaw_error,
+        "measured_initial_yaw_rate_rad_s": measured_initial_yaw_rate,
         "initial_yaw_rate_rad_s": initial_yaw_rate,
     })
     env.minco_plan_diagnostics.append(diagnostic)
@@ -621,6 +707,7 @@ def plan_and_move_minco(
             result.times,
             rates=[initial_yaw_rate, 0.0],
         ),
+        step_callback=step_callback,
     )
     return result
 
@@ -744,6 +831,7 @@ def move_minco(
     carried_actor=None,
     carried_pose=None,
     yaw_coefficients=None,
+    step_callback=None,
 ):
     if carried_actor is not None:
         _begin_isolated_carry(env, carried_actor)
@@ -798,6 +886,11 @@ def move_minco(
                     set_pose(env, hand_pose, hand_v)
                 if carried_actor is not None:
                     _set_isolated_actor_pose(carried_actor, hand_pose * carried_pose)
-                step(env, 1, save_freq=save_freq)
+                step(
+                    env,
+                    1,
+                    save_freq=save_freq,
+                    step_callback=step_callback,
+                )
     finally:
         env._flying_hand_carrying = False

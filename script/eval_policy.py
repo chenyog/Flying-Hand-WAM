@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import json
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -182,8 +183,6 @@ def main(usr_args):
     print("\033[95mRandom Light:\033[0m " + str(args["domain_randomization"]["random_light"]))
     if args["domain_randomization"]["random_light"]:
         print(" - Crazy Random Light Rate: " + str(args["domain_randomization"]["crazy_random_light_rate"]))
-    if "random_board_height" in args["domain_randomization"]:
-        print("\033[95mRandom Board Height:\033[0m " + str(args["domain_randomization"]["random_board_height"]))
     if "random_table_height" in args["domain_randomization"]:
         print("\033[95mRandom Table Height:\033[0m " + str(args["domain_randomization"]["random_table_height"]))
     print("\033[95mRandom Head Camera Distance:\033[0m " + str(args["domain_randomization"]["random_head_camera_dis"]))
@@ -205,6 +204,8 @@ def main(usr_args):
     st_seed = 100000 * (1 + seed)
     suc_nums = []
     test_num = int(usr_args.get("eval_num_episodes", 100))
+    eval_video_episode_limit = int(usr_args.get("eval_video_episode_limit", 1))
+    eval_video_max_seconds = float(usr_args.get("eval_video_max_seconds", 30.0))
     topk = 1
 
     model = get_model(usr_args)
@@ -216,7 +217,10 @@ def main(usr_args):
                                    test_num=test_num,
                                    video_sizes=video_sizes,
                                    eval_video_fps=eval_video_fps,
-                                   instruction_type=instruction_type)
+                                   instruction_type=instruction_type,
+                                   eval_video_episode_limit=eval_video_episode_limit,
+                                   eval_video_max_seconds=eval_video_max_seconds,
+                                   diagnostics_path=save_dir / "policy_diagnostics.jsonl")
     suc_nums.append(suc_num)
 
     topk_success_rate = sorted(suc_nums, reverse=True)[:topk]
@@ -240,7 +244,10 @@ def eval_policy(task_name,
                 test_num=100,
                 video_sizes=None,
                 eval_video_fps=None,
-                instruction_type=None):
+                instruction_type=None,
+                eval_video_episode_limit=1,
+                eval_video_max_seconds=30.0,
+                diagnostics_path=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
 
@@ -306,7 +313,16 @@ def eval_policy(task_name,
         instruction = np.random.choice(results[0][instruction_type])
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
-        if TASK_ENV.eval_video_path is not None:
+        record_episode_video = (
+            TASK_ENV.eval_video_path is not None
+            and now_id < eval_video_episode_limit
+        )
+        if record_episode_video:
+            TASK_ENV.eval_video_frame_limit = max(
+                1,
+                int(round(eval_video_max_seconds * eval_video_fps)),
+            )
+            TASK_ENV.eval_video_frames_written = 0
             ffmpegs = {}
             for camera_name, video_size in video_sizes.items():
                 safe_camera_name = camera_name.replace("/", "_")
@@ -347,7 +363,7 @@ def eval_policy(task_name,
                 succ = True
                 break
         # task_total_reward += TASK_ENV.episode_score
-        if TASK_ENV.eval_video_path is not None:
+        if record_episode_video:
             TASK_ENV._del_eval_video_ffmpeg()
 
         if succ:
@@ -355,6 +371,18 @@ def eval_policy(task_name,
             print("\033[92mSuccess!\033[0m")
         else:
             print("\033[91mFail!\033[0m")
+
+        if diagnostics_path is not None and hasattr(model, "get_episode_diagnostics"):
+            episode_diagnostics = model.get_episode_diagnostics()
+            episode_diagnostics.update({
+                "task": task_name,
+                "episode": int(now_id),
+                "seed": int(now_seed),
+                "success": bool(succ),
+                "action_count": int(TASK_ENV.take_action_cnt),
+            })
+            with open(diagnostics_path, "a", encoding="utf-8") as diagnostics_file:
+                diagnostics_file.write(json.dumps(episode_diagnostics, allow_nan=False) + "\n")
 
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))

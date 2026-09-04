@@ -27,6 +27,7 @@ class place_fruit_skillet(FlyingHandBaseTask):
         fruit_slot, skillet_slot = np.random.choice(len(self.board_slots), 2, replace=False)
         self.fruit = self._create_board_actor(self.fruit_name, self.fruit_id, int(fruit_slot), mass=0.05)
         self.skillet = self._create_board_actor(self.skillet_name, self.skillet_id, int(skillet_slot), mass=0.4)
+        self.graspable_actors = [self.fruit]
         self.add_prohibit_area(self.fruit, padding=0.08)
         self.add_prohibit_area(self.skillet, padding=0.08)
 

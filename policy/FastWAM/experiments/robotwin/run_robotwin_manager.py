@@ -48,11 +48,18 @@ def _load_all_tasks(robotwin_root: Path, cfg: DictConfig) -> list[str]:
     dataset_dirs = list(cfg.data.train.get("dataset_dirs", []))
     if len(dataset_dirs) > 1:
         data_root = robotwin_root / "data"
+        task_namespace = cfg.EVALUATION.get("task_namespace")
         tasks = []
         for dataset_dir in dataset_dirs:
             name = Path(str(dataset_dir)).name
             matches = sorted(path for path in data_root.glob(f"*/{name}") if path.is_dir())
-            tasks.append(matches[0].relative_to(data_root).as_posix() if matches else name)
+            if matches:
+                task = matches[0].relative_to(data_root).as_posix()
+            elif task_namespace is not None and str(task_namespace).strip():
+                task = f"{str(task_namespace).strip('/')}/{name}"
+            else:
+                task = name
+            tasks.append(task)
         return tasks
 
     eval_step_limit_file = robotwin_root / "task_config" / "_eval_step_limit.yml"
@@ -136,8 +143,13 @@ def main(cfg: DictConfig):
     failed_tasks_file = output_dir / "failed_tasks.txt"
     summary_csv = output_dir / "summary.csv"
 
+    requested_tasks = cfg.MULTIRUN.get("tasks")
     task_name_cfg = cfg.EVALUATION.task_name
-    if task_name_cfg is None or str(task_name_cfg).strip() == "":
+    if requested_tasks is not None:
+        tasks = [str(task) for task in requested_tasks]
+        if not tasks:
+            raise ValueError("MULTIRUN.tasks must not be an empty list")
+    elif task_name_cfg is None or str(task_name_cfg).strip() == "":
         tasks = _load_all_tasks(robotwin_root, cfg)
     else:
         tasks = [str(task_name_cfg)]
