@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the self-contained in-process C++ MINCO optimizer.
+"""Build the self-contained in-process C++ MINCO optimizer for tests/runtime.
 
 The original header-only MINCO and L-BFGS implementation is vendored under
 ``envs/flying_hand/cpp``. Eigen remains the only system header dependency

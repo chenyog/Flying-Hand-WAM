@@ -438,8 +438,9 @@ def parse_args_and_config():
 
 
 if __name__ == "__main__":
-    from test_render import Sapien_TEST
-    Sapien_TEST()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tests.test_render import SapienRenderSmokeTest
+    SapienRenderSmokeTest()
 
     usr_args = parse_args_and_config()
 

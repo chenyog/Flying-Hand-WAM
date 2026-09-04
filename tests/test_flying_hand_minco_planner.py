@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Numerical unit tests for the Flying-Hand MINCO planner."""
+"""Numerical unit tests for the Flying-Hand MINCO planner and physics bridge."""
 
 import unittest
 from dataclasses import asdict

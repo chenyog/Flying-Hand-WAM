@@ -226,6 +226,7 @@ class WorldActionRobotWinPolicy:
         self.action_diagnostics = self._empty_action_diagnostics()
         self.waypoint_diagnostics = []
         self.flight_diagnostics = self._empty_flight_diagnostics()
+        self.actor_motion_diagnostics = {}
         self._waypoint_reference_position = None
         self._waypoint_reference_velocity = np.zeros(3)
         self._waypoint_reference_orientation = None
@@ -562,6 +563,49 @@ class WorldActionRobotWinPolicy:
         pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
         diagnostics = self.flight_diagnostics
         diagnostics["samples"] += 1
+        for actor in getattr(task_env, "task_actors", ()):
+            name = actor.get_name()
+            pose = actor.get_pose()
+            bounds = task_env._get_actor_world_bounds(actor)
+            center = 0.5 * (bounds[0] + bounds[1])
+            local_z = pose.to_transformation_matrix()[:3, 2]
+            actor_diagnostic = self.actor_motion_diagnostics.get(name)
+            if actor_diagnostic is None:
+                actor_diagnostic = {
+                    "initial_center": center.tolist(),
+                    "final_center": center.tolist(),
+                    "initial_local_z": local_z.tolist(),
+                    "ever_attached": False,
+                    "max_displacement_before_attachment_m": 0.0,
+                    "max_tilt_before_attachment_deg": 0.0,
+                    "min_bottom_before_attachment_m": float(bounds[0][2]),
+                }
+                self.actor_motion_diagnostics[name] = actor_diagnostic
+            if actor is self.attached_actor:
+                actor_diagnostic["ever_attached"] = True
+            if not actor_diagnostic["ever_attached"]:
+                displacement = np.linalg.norm(
+                    center
+                    - np.asarray(actor_diagnostic["initial_center"], dtype=float)
+                )
+                initial_local_z = np.asarray(
+                    actor_diagnostic["initial_local_z"],
+                    dtype=float,
+                )
+                tilt = np.arccos(np.clip(np.dot(initial_local_z, local_z), -1.0, 1.0))
+                actor_diagnostic["max_displacement_before_attachment_m"] = max(
+                    actor_diagnostic["max_displacement_before_attachment_m"],
+                    float(displacement),
+                )
+                actor_diagnostic["max_tilt_before_attachment_deg"] = max(
+                    actor_diagnostic["max_tilt_before_attachment_deg"],
+                    float(np.degrees(tilt)),
+                )
+                actor_diagnostic["min_bottom_before_attachment_m"] = min(
+                    actor_diagnostic["min_bottom_before_attachment_m"],
+                    float(bounds[0][2]),
+                )
+            actor_diagnostic["final_center"] = center.tolist()
         diagnostics["max_abs_roll_rad"] = max(diagnostics["max_abs_roll_rad"], abs(float(roll)))
         diagnostics["max_abs_pitch_rad"] = max(diagnostics["max_abs_pitch_rad"], abs(float(pitch)))
         pitch_rate = abs(float(angular_velocity[1]))
@@ -699,14 +743,23 @@ class WorldActionRobotWinPolicy:
         self.grasp_diagnostics.append(event)
         self.grasp_commanded = bool(grasp)
         if grasp:
-            task_env.set_flying_hand_gripper(
-                task_env.flying_hand_config["gripper"]["close_qpos"],
-                is_grasp=True,
-            )
-            event["gripper_close_commanded"] = True
             if self._attach_actor_in_grasp_space(task_env, event):
+                task_env.set_flying_hand_gripper(
+                    task_env.flying_hand_config["gripper"]["close_qpos"],
+                    is_grasp=True,
+                )
+                event["gripper_close_commanded"] = True
                 self.gripper_state = "grasping_attached"
             else:
+                # A rejected policy close must not actuate the physical fingers.
+                # Closing below or beside a stack can topple task actors even
+                # though none is eligible for scripted transport.
+                task_env.set_flying_hand_gripper(
+                    task_env.flying_hand_config["gripper"]["open_qpos"],
+                    is_grasp=False,
+                )
+                event["gripper_close_commanded"] = False
+                event["gripper_kept_open"] = True
                 self.gripper_state = "grasping_empty"
         else:
             event["released"] = self.attached_actor is not None
@@ -795,6 +848,9 @@ class WorldActionRobotWinPolicy:
         max_reference_velocity = 0.0
         max_reference_acceleration = 0.0
         max_reference_lag = 0.0
+        safety_filter_adjustments = 0
+        safety_filter_vertical_first = 0
+        max_safety_filter_z_lift = 0.0
         if grasp_states is not None and len(grasp_states) != len(actions):
             raise ValueError("grasp_states must contain one state per waypoint")
         for action_index, target_pose in enumerate(poses):
@@ -807,6 +863,30 @@ class WorldActionRobotWinPolicy:
                     bool(grasp_states[action_index]),
                     action_step=int(task_env.take_action_cnt + action_index),
                 )
+            target_filter = getattr(
+                task_env,
+                "filter_flying_hand_policy_target",
+                None,
+            )
+            if target_filter is not None:
+                current_reference_pose = sapien.Pose(
+                    self._waypoint_reference_position.tolist(),
+                    self._waypoint_reference_orientation.tolist(),
+                )
+                target_pose, safety_filter = target_filter(
+                    target_pose,
+                    current_reference_pose,
+                    carried_actor=self.attached_actor,
+                )
+                if safety_filter is not None:
+                    safety_filter_adjustments += 1
+                    safety_filter_vertical_first += int(
+                        safety_filter["vertical_first"]
+                    )
+                    max_safety_filter_z_lift = max(
+                        max_safety_filter_z_lift,
+                        float(safety_filter["z_lift_m"]),
+                    )
             target_position = np.asarray(target_pose.p, dtype=float)
             max_waypoint_spacing = max(
                 max_waypoint_spacing,
@@ -871,6 +951,9 @@ class WorldActionRobotWinPolicy:
             "max_reference_velocity_mps": max_reference_velocity,
             "max_reference_acceleration_mps2": max_reference_acceleration,
             "max_reference_lag_m": max_reference_lag,
+            "safety_filter_adjustments": safety_filter_adjustments,
+            "safety_filter_vertical_first": safety_filter_vertical_first,
+            "max_safety_filter_z_lift_m": max_safety_filter_z_lift,
             "interpolation": "causal_slew_limited_position_reference",
         })
 
@@ -940,6 +1023,7 @@ class WorldActionRobotWinPolicy:
                 "transition_pending": False,
             },
             "grasp_events": list(self.grasp_diagnostics),
+            "actor_motion": dict(self.actor_motion_diagnostics),
             "waypoint_tracking": list(self.waypoint_diagnostics),
         }
 
@@ -953,6 +1037,7 @@ class WorldActionRobotWinPolicy:
         self.action_diagnostics = self._empty_action_diagnostics()
         self.waypoint_diagnostics = []
         self.flight_diagnostics = self._empty_flight_diagnostics()
+        self.actor_motion_diagnostics = {}
         self._waypoint_reference_position = None
         self._waypoint_reference_velocity = np.zeros(3)
         self._waypoint_reference_orientation = None

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strictly validate and summarize Flying-Hand planner test JSONL results."""
+"""Validate and summarize Flying-Hand planner results under tests/results."""
 
 import argparse
 import csv
@@ -7,6 +7,9 @@ import json
 import math
 from collections import Counter, defaultdict
 from pathlib import Path
+
+
+TEST_RESULTS_ROOT = Path(__file__).resolve().parent / "results"
 
 
 STATUS_NAMES = (
@@ -278,12 +281,21 @@ def summarize(input_dir, output_dir, tasks, seeds):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", type=Path, required=True, help="Stability collector output root containing workers/*.jsonl")
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Output root (default: tests/results/flying_hand_planner/summary).",
+    )
     parser.add_argument("--tasks", nargs="+", required=True)
     parser.add_argument("--seeds", nargs="+", type=int, required=True)
     args = parser.parse_args()
+    output_dir = (
+        args.output_dir.resolve()
+        if args.output_dir is not None
+        else TEST_RESULTS_ROOT / "flying_hand_planner" / "summary"
+    )
     try:
-        summary = summarize(args.input_dir.resolve(), args.output_dir.resolve(), args.tasks, args.seeds)
+        summary = summarize(args.input_dir.resolve(), output_dir, args.tasks, args.seeds)
     except (CoverageError, OSError) as exc:
         raise SystemExit(f"summary failed: {exc}") from exc
     print(json.dumps(summary["coverage"], sort_keys=True))

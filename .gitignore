@@ -32,4 +32,5 @@ envs/curobo/*
 /*.json*
 /*.txt
 
-tests/
+tests/results/*
+!tests/results/.gitignore

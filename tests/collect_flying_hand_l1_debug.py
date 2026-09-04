@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect replayable Flying-Hand L1 diagnostics for every task and seed.
+"""Collect replayable Flying-Hand L1 diagnostics under tests/results.
 
 The collector deliberately records numerical state rather than RGB frames.  One
 compressed ``.npz`` file contains every 5 ms simulation step, including the
@@ -21,6 +21,7 @@ import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEST_RESULTS_ROOT = Path(__file__).resolve().parent / "results"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -305,7 +306,12 @@ def main():
     parser.add_argument("--task-config", default="flying_hand_clean")
     parser.add_argument("--tasks", nargs="+", default=list(DEFAULT_TASKS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=TEST_RESULTS_ROOT / "flying_hand_l1_debug",
+        help="Output root (default: tests/results/flying_hand_l1_debug).",
+    )
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
     parser.add_argument(

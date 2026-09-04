@@ -1,57 +1,22 @@
-import sys
+"""Smoke-test SAPIEN renderer initialization."""
+
 import warnings
-import os
+
+import gymnasium as gym
+import sapien.core as sapien
+import toppra as ta
+
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 warnings.simplefilter(action="ignore", category=UserWarning)
-current_file_path = os.path.abspath(__file__)
-parent_dir = os.path.dirname(current_file_path)
-
-sys.path.append(os.path.join(parent_dir, "../../tools"))
-import numpy as np
-import pdb
-import json
-import torch
-import sapien.core as sapien
-from sapien.utils.viewer import Viewer
-import gymnasium as gym
-import toppra as ta
-import transforms3d as t3d
-from collections import OrderedDict
-
-import sys
-import warnings
-import os
-
-warnings.simplefilter(action="ignore", category=FutureWarning)
-warnings.simplefilter(action="ignore", category=UserWarning)
-current_file_path = os.path.abspath(__file__)
-parent_dir = os.path.dirname(current_file_path)
-
-sys.path.append(os.path.join(parent_dir, "../../tools"))
-import numpy as np
-import pdb
-import json
-import torch
-import sapien.core as sapien
-from sapien.utils.viewer import Viewer
-import gymnasium as gym
-import toppra as ta
-import transforms3d as t3d
-from collections import OrderedDict
 
 
-class Sapien_TEST(gym.Env):
+class SapienRenderSmokeTest(gym.Env):
 
     def __init__(self):
         super().__init__()
         ta.setup_logging("CRITICAL")  # hide logging
-        try:
-            self.setup_scene()
-            print("\033[32m" + "Render Well" + "\033[0m")
-        except:
-            print("\033[31m" + "Render Error" + "\033[0m")
-            exit()
+        self.setup_scene()
 
     def setup_scene(self, **kwargs):
         """
@@ -78,4 +43,5 @@ class Sapien_TEST(gym.Env):
 
 
 if __name__ == "__main__":
-    a = Sapien_TEST()
+    SapienRenderSmokeTest()
+    print("\033[32mRender Well\033[0m")

@@ -237,8 +237,9 @@ def run(TASK_ENV, args):
 
 
 if __name__ == "__main__":
-    from test_render import Sapien_TEST
-    Sapien_TEST()
+    sys.path.insert(0, os.path.abspath(os.path.join(parent_directory, "..")))
+    from tests.test_render import SapienRenderSmokeTest
+    SapienRenderSmokeTest()
 
     import torch.multiprocessing as mp
     mp.set_start_method("spawn", force=True)

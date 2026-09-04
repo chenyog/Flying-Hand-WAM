@@ -118,6 +118,7 @@ class FlyingHandBaseTask(gym.Env):
         self._flying_hand_carrying = False
         self._isolated_carried_actor_state = None
         self._released_actor_collision_state = None
+        self.flying_hand_grasp_diagnostics = []
         self._apply_flying_hand_config()
         self.plan_success = True
         self.step_lim = None
@@ -357,7 +358,12 @@ class FlyingHandBaseTask(gym.Env):
             if xy is not None:
                 return qpos, int(slot_id), *xy, self.board_slots[int(slot_id)][1] - p["z_offset"]
 
-    def _get_actor_world_corners(self, actor, default_size=(0.1, 0.1, 0.1)):
+    def _get_actor_world_corners(
+        self,
+        actor,
+        default_size=(0.1, 0.1, 0.1),
+        actor_pose=None,
+    ):
         data = getattr(actor, "config", None)
         if data is not None:
             center = np.array(data.get("center", [0.0, 0.0, 0.0]), dtype=float)
@@ -400,7 +406,8 @@ class FlyingHandBaseTask(gym.Env):
                     for y in [-half[1], half[1]]
                     for z in [-half[2], half[2]]
                 ])
-        mat = actor.get_pose().to_transformation_matrix()
+        pose = actor.get_pose() if actor_pose is None else actor_pose
+        mat = pose.to_transformation_matrix()
         return (mat[:3, :3] @ corners.T).T + mat[:3, 3]
 
     def _get_actor_world_bounds(self, actor, default_size=(0.1, 0.1, 0.1)):
@@ -411,13 +418,17 @@ class FlyingHandBaseTask(gym.Env):
         self,
         actor,
         hand_pose=None,
+        actor_pose=None,
     ):
         """Check whether an actor box center is inside the grasp region."""
         root_pose = self.flying_hand.get_root_pose() if hand_pose is None else hand_pose
         u_center_offset = self.flying_hand_config["root"]["u_center_offset"]
         u_center_pose = root_pose * sapien.Pose(u_center_offset)
         u_center_inverse = np.linalg.inv(u_center_pose.to_transformation_matrix())
-        world_corners = self._get_actor_world_corners(actor)
+        world_corners = self._get_actor_world_corners(
+            actor,
+            actor_pose=actor_pose,
+        )
         local_corners = (
             u_center_inverse[:3, :3] @ world_corners.T
         ).T + u_center_inverse[:3, 3]

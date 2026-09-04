@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for policy-time Flying-Hand grasp eligibility checks."""
+"""Unit tests for policy-time Flying-Hand grasp eligibility and execution."""
 
 import unittest
 from unittest import mock
@@ -12,6 +12,9 @@ import sapien
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from envs.flying_hand._base_task import FlyingHandBaseTask
+from envs.flying_hand.blocks_ranking_rgb import blocks_ranking_rgb
+from envs.flying_hand import planner
+from envs.utils.create_actor import UnStableError
 from policy.FastWAM.experiments.robotwin.deploy_policy import WorldActionRobotWinPolicy
 
 
@@ -57,13 +60,110 @@ def _environment(actor):
     env.flying_hand = _Hand()
     env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
     env.flying_hand_grasp_validation = {
-        "center_bounds_min": np.array([0.00, -0.12, -0.15]),
-        "center_bounds_max": np.array([0.20, 0.12, 0.10]),
+        "center_bounds_min": np.array([0.04, -0.08, -0.12]),
+        "center_bounds_max": np.array([0.16, 0.08, 0.06]),
     }
     return env
 
 
 class FlyingHandGraspValidationTest(unittest.TestCase):
+    def test_blocks_ranking_policy_filter_climbs_before_horizontal_approach(self):
+        block = _Actor("green block", [0.70, 0.0, 1.00])
+        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
+        env.blocks = [block]
+        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
+        target = sapien.Pose([0.60, 0.0, 0.90])
+        current = sapien.Pose([0.10, -0.20, 0.80])
+
+        filtered, diagnostic = env.filter_flying_hand_policy_target(
+            target,
+            current,
+        )
+
+        np.testing.assert_allclose(filtered.p[:2], current.p[:2])
+        self.assertAlmostEqual(filtered.p[2], 1.09)
+        self.assertTrue(diagnostic["vertical_first"])
+        self.assertEqual(diagnostic["actor"], "green block")
+
+    def test_blocks_ranking_policy_filter_preserves_safe_target(self):
+        block = _Actor("green block", [0.70, 0.0, 1.00])
+        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
+        env.blocks = [block]
+        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
+        target = sapien.Pose([0.60, 0.0, 1.12])
+
+        filtered, diagnostic = env.filter_flying_hand_policy_target(
+            target,
+            sapien.Pose([0.50, 0.0, 1.10]),
+        )
+
+        np.testing.assert_allclose(filtered.p, target.p)
+        self.assertIsNone(diagnostic)
+
+    def test_blocks_ranking_policy_filter_protects_neighbor_while_carrying(self):
+        carried = _Actor("green block", [0.70, 0.0, 1.00])
+        neighbor = _Actor("blue block", [0.70, 0.28, 1.09])
+        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
+        env.blocks = [carried, neighbor]
+        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
+
+        filtered, diagnostic = env.filter_flying_hand_policy_target(
+            sapien.Pose([0.60, 0.02, 0.90]),
+            sapien.Pose([0.10, -0.20, 0.80]),
+            carried_actor=carried,
+        )
+
+        self.assertAlmostEqual(filtered.p[2], 1.18, places=6)
+        self.assertEqual(diagnostic["actor"], "blue block")
+
+    def test_expert_isolated_carry_rejects_invalid_box_center(self):
+        actor = _Actor("knocked block", [0.10, 0.20, -0.04])
+        env = _environment(actor)
+        env._isolated_carried_actor_state = None
+        env.flying_hand_grasp_diagnostics = []
+        env.plan_success = True
+        env.task_failed = False
+
+        with self.assertRaises(UnStableError):
+            planner.begin_isolated_carry(env, actor)
+
+        self.assertFalse(env.plan_success)
+        self.assertTrue(env.task_failed)
+        self.assertIsNone(env._isolated_carried_actor_state)
+        self.assertEqual(
+            env.flying_hand_grasp_diagnostics[-1]["stage"],
+            "isolated_carry_start",
+        )
+
+    def test_scripted_follow_stops_if_target_box_center_leaves_region(self):
+        actor = _Actor("block", [0.10, 0.0, -0.04])
+        env = _environment(actor)
+        env._released_actor_collision_state = None
+        env.flying_hand_grasp_diagnostics = []
+        env.plan_success = True
+        env.task_failed = False
+        env._isolated_carried_actor_state = {
+            "actor": actor,
+            "components": [],
+            "enabled": [],
+            "excluded_components": [],
+        }
+
+        with self.assertRaises(UnStableError):
+            planner.set_isolated_carried_actor_target(
+                env,
+                actor,
+                sapien.Pose([0.10, 0.10, -0.04]),
+            )
+
+        self.assertFalse(env.plan_success)
+        self.assertTrue(env.task_failed)
+        self.assertIsNone(env._isolated_carried_actor_state)
+        self.assertEqual(
+            env.flying_hand_grasp_diagnostics[-1]["stage"],
+            "isolated_carry_follow",
+        )
+
     def test_task_can_exclude_destination_container_from_grasp_candidates(self):
         env = FlyingHandBaseTask.__new__(FlyingHandBaseTask)
         target = object()
@@ -113,9 +213,9 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
                 action_step=7,
             )
 
-        self.assertEqual(commands, [([1.0], True)])
+        self.assertEqual(commands, [([0.0], False)])
         hold.assert_not_called()
-        self.assertTrue(env.is_grasping)
+        self.assertFalse(env.is_grasping)
         self.assertEqual(len(captures), 1)
         self.assertEqual(policy.gripper_state, "grasping_empty")
         self.assertTrue(policy.grasp_diagnostics[-1]["completed"])
@@ -124,6 +224,10 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
             policy.grasp_diagnostics[-1]["attachment"],
             "rejected_box_center_outside_grasp_region",
         )
+        self.assertFalse(
+            policy.grasp_diagnostics[-1]["gripper_close_commanded"]
+        )
+        self.assertTrue(policy.grasp_diagnostics[-1]["gripper_kept_open"])
 
     def test_open_edge_releases_immediately(self):
         policy = WorldActionRobotWinPolicy.__new__(WorldActionRobotWinPolicy)
@@ -214,10 +318,10 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
         self.assertTrue(diagnostic["center_inside"])
 
     def test_box_overlap_does_not_count_when_center_is_outside(self):
-        actor = _Actor("block", [0.21, 0.0, -0.04])
+        actor = _Actor("block", [0.17, 0.0, -0.04])
         diagnostic = _environment(actor).get_flying_hand_grasp_diagnostic(actor)
 
-        self.assertLess(diagnostic["actor_bounds_min_u"][0], 0.20)
+        self.assertLess(diagnostic["actor_bounds_min_u"][0], 0.16)
         self.assertFalse(diagnostic["center_inside"])
         self.assertFalse(diagnostic["eligible"])
 
@@ -240,6 +344,22 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
 
         self.assertFalse(current["center_inside"])
         self.assertTrue(future["center_inside"])
+
+    def test_explicit_actor_pose_validates_scripted_follow_target(self):
+        actor = _Actor("block", [0.10, 0.0, -0.04])
+        env = _environment(actor)
+
+        valid = env.get_flying_hand_grasp_diagnostic(
+            actor,
+            actor_pose=sapien.Pose([0.10, 0.0, -0.04]),
+        )
+        invalid = env.get_flying_hand_grasp_diagnostic(
+            actor,
+            actor_pose=sapien.Pose([0.10, 0.10, -0.04]),
+        )
+
+        self.assertTrue(valid["eligible"])
+        self.assertFalse(invalid["eligible"])
 
     def test_waypoints_are_tracked_at_fixed_rate_without_minco(self):
         policy = WorldActionRobotWinPolicy.__new__(WorldActionRobotWinPolicy)

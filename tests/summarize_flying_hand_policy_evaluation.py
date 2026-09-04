@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Summarize FastWAM Flying-Hand evaluation and safety diagnostics."""
+"""Summarize FastWAM Flying-Hand evaluation diagnostics under tests/results."""
 
 import argparse
 import csv
 import json
 from collections import defaultdict
 from pathlib import Path
+
+
+TEST_RESULTS_ROOT = Path(__file__).resolve().parent / "results"
 
 
 def _load_rows(input_dirs):
@@ -271,14 +274,18 @@ def summarize(input_dirs, output_dir: Path, expected_episodes: int | None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-dir", required=True, type=Path, nargs="+")
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Output root (default: tests/results/flying_hand_policy_evaluation/summary).",
+    )
     parser.add_argument("--expected-episodes", type=int)
     args = parser.parse_args()
     input_dirs = [path.resolve() for path in args.input_dir]
     output_dir = (
         args.output_dir.resolve()
         if args.output_dir is not None
-        else input_dirs[0] / "summary"
+        else TEST_RESULTS_ROOT / "flying_hand_policy_evaluation" / "summary"
     )
     summary = summarize(input_dirs, output_dir, args.expected_episodes)
     print(json.dumps(summary["coverage"], sort_keys=True))

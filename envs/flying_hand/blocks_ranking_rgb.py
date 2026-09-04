@@ -17,12 +17,19 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
     grasp_y_offset = 0.02
     # Keep the flying-hand's u_center clear of the shelf and neighboring
     # blocks.  The object itself remains supported by the shelf until grasp.
-    pre_grasp_z_offset = 0.12
-    grasp_z_offset = 0.050
+    # Keep the gripper's lower links above a supporting block when grasping the
+    # top object of a temporary two-block stack. The old 0.05 m grasp offset
+    # swept both blocks during closure in the five-move ranking cases.
+    pre_grasp_z_offset = 0.16
+    grasp_z_offset = 0.090
     pull_out_z_offset = 0.28
     place_pre_z_offset = 0.08
     release_retreat_z_offset = 0.10
     release_lift_seconds = 0.6
+    policy_block_y_clearance = 0.30
+    policy_block_x_back_clearance = 0.15
+    policy_vertical_first_tolerance = 0.01
+    policy_block_clearance_enabled = True
 
     def load_actors(self):
         self._reset_board_slots()
@@ -73,6 +80,79 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
             center[1] + self.grasp_y_offset,
             center[2] + z_offset,
         ])
+
+    def filter_flying_hand_policy_target(
+        self,
+        target_pose,
+        current_reference_pose,
+        *,
+        carried_actor=None,
+    ):
+        """Keep policy motion above nearby non-carried ranking blocks.
+
+        The learned policy is still responsible for selecting the block and
+        horizontal target. This task-local guard only enforces the same
+        vertical clearance used by the expert trajectory. If the current
+        reference is too low, horizontal motion pauses until the reference has
+        climbed above the block; this avoids sweeping through a stack while
+        the acceleration limiter catches up in z.
+        """
+        if not self.policy_block_clearance_enabled:
+            return target_pose, None
+
+        offset_pose = sapien.Pose(self.flying_hand_config["root"]["u_center_offset"])
+        target_u_pose = target_pose * offset_pose
+        target_u = np.asarray(target_u_pose.p, dtype=float)
+        nearby = []
+        for block in self.blocks:
+            if block is carried_actor:
+                continue
+            bounds = self._get_actor_world_bounds(block)
+            center = 0.5 * (bounds[0] + bounds[1])
+            if not (
+                center[0] + self.pre_grasp_x_offset
+                <= target_u[0]
+                <= center[0] + self.policy_block_x_back_clearance
+            ):
+                continue
+            if abs(target_u[1] - center[1]) > self.policy_block_y_clearance:
+                continue
+            nearby.append((float(center[2]), block, center))
+        if not nearby:
+            return target_pose, None
+
+        # A wide gripper can overlap two neighboring blocks. Protect against
+        # the tallest nearby obstacle instead of only the nearest centerline;
+        # this also handles a two-block stack without a separate stack flag.
+        _, block, center = max(nearby, key=lambda item: item[0])
+        safe_u_z = float(center[2] + self.grasp_z_offset)
+        if target_u[2] >= safe_u_z:
+            return target_pose, None
+
+        current_u_pose = current_reference_pose * offset_pose
+        current_u = np.asarray(current_u_pose.p, dtype=float)
+        filtered_u = target_u.copy()
+        filtered_u[2] = safe_u_z
+        vertical_first = bool(
+            current_u[2] < safe_u_z - self.policy_vertical_first_tolerance
+        )
+        if vertical_first:
+            filtered_u[:2] = current_u[:2]
+
+        rotation = target_pose.to_transformation_matrix()[:3, :3]
+        root_offset = rotation @ np.asarray(
+            self.flying_hand_config["root"]["u_center_offset"],
+            dtype=float,
+        )
+        filtered_pose = sapien.Pose(
+            (filtered_u - root_offset).tolist(),
+            target_pose.q,
+        )
+        return filtered_pose, {
+            "actor": block.get_name(),
+            "z_lift_m": float(safe_u_z - target_u[2]),
+            "vertical_first": vertical_first,
+        }
 
     def _move_block(self, start, block, target_center, save_freq, retreat=None, last=False):
         motion = planner.TaskMotionPlanner(self, save_freq)

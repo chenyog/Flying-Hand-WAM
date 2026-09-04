@@ -7,6 +7,9 @@ from .blocks_ranking_rgb import blocks_ranking_rgb
 
 
 class blocks_ranking_size(blocks_ranking_rgb):
+    # The RGB-ranking safety filter is tuned for equal 90 mm-tall blocks and
+    # their temporary two-block stacks; this task uses separate staging poses.
+    policy_block_clearance_enabled = False
     grasp_y_offset = 0.02
     pre_grasp_x_offset = -0.58
     grasp_x_offset = -0.10

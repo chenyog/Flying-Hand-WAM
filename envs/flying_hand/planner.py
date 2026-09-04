@@ -3,6 +3,8 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import sapien
 
+from envs.utils.create_actor import UnStableError
+
 try:
     from . import _minco_cpp
 except ImportError as error:
@@ -16,7 +18,7 @@ def _require_minco_cpp():
     if _minco_cpp is None:
         raise RuntimeError(
             "The Flying-Hand C++ MINCO module is not built. Run "
-            "`.venv/bin/python script/build_flying_hand_minco_cpp.py` "
+            "`.venv/bin/python tests/build_flying_hand_minco_cpp.py` "
             "from the repository root."
         ) from _MINCO_CPP_IMPORT_ERROR
 
@@ -91,12 +93,27 @@ def set_pose(env, pose, vel=None):
 
 def _begin_isolated_carry(env, actor):
     """Temporarily remove a scripted carried actor from PhysX simulation."""
-    restore_released_actor_collisions(env)
     state = env._isolated_carried_actor_state
     if state is not None:
         if state["actor"] is actor:
             return
         raise RuntimeError("An isolated carried actor is already active")
+
+    diagnostic = env.get_flying_hand_grasp_diagnostic(actor)
+    diagnostic["stage"] = "isolated_carry_start"
+    env.flying_hand_grasp_diagnostics.append(diagnostic)
+    if not diagnostic["eligible"]:
+        env.plan_success = False
+        env.task_failed = True
+        raise UnStableError(
+            "Refusing isolated carry for "
+            f"{actor.get_name()!r}: box center "
+            f"{diagnostic['actor_center_u']} is outside gripper bounds "
+            f"[{diagnostic['center_bounds_min_u']}, "
+            f"{diagnostic['center_bounds_max_u']}]"
+        )
+
+    restore_released_actor_collisions(env)
 
     components = _dynamic_components(actor)
     if not components:
@@ -118,6 +135,7 @@ def _begin_isolated_carry(env, actor):
         "components": components,
         "enabled": [bool(component.is_enabled) for component in components],
         "excluded_components": excluded_components,
+        "grasp_diagnostic": diagnostic,
     }
     for component in components:
         component.disable()
@@ -141,6 +159,22 @@ def set_isolated_carried_actor_target(env, actor, pose):
     state = env._isolated_carried_actor_state
     if state is None or state["actor"] is not actor:
         raise RuntimeError("The requested actor is not the active isolated carried actor")
+    diagnostic = env.get_flying_hand_grasp_diagnostic(
+        actor,
+        hand_pose=env.flying_hand.get_root_pose(),
+        actor_pose=pose,
+    )
+    if not diagnostic["eligible"]:
+        diagnostic["stage"] = "isolated_carry_follow"
+        env.flying_hand_grasp_diagnostics.append(diagnostic)
+        env.plan_success = False
+        env.task_failed = True
+        restore_isolated_carried_actor(env)
+        raise UnStableError(
+            "Stopping isolated carry for "
+            f"{actor.get_name()!r}: target box center "
+            f"{diagnostic['actor_center_u']} left the gripper bounds"
+        )
     _set_isolated_actor_pose(actor, pose)
 
 
@@ -885,7 +919,11 @@ def move_minco(
                     hand_pose, hand_v = ref_pose, v
                     set_pose(env, hand_pose, hand_v)
                 if carried_actor is not None:
-                    _set_isolated_actor_pose(carried_actor, hand_pose * carried_pose)
+                    set_isolated_carried_actor_target(
+                        env,
+                        carried_actor,
+                        hand_pose * carried_pose,
+                    )
                 step(
                     env,
                     1,

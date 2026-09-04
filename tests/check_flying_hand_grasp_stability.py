@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Flying-Hand grasp tasks and report object and link stability per seed.
+"""Run Flying-Hand grasp tasks and save stability results under tests/results.
 
 The link monitor separates commanded gripper closing, static post-close hold,
 and object transport.  Several Flying-Hand tasks explicitly carry an object
@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TEST_RESULTS_ROOT = Path(__file__).resolve().parent / "results"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -678,13 +679,18 @@ def run_once(
                 any(not bool(component.is_enabled) for component in components)
             )
 
-    def monitored_step(env, n, save_freq=-1):
+    def monitored_step(env, n, save_freq=-1, step_callback=None):
         for _ in range(n):
             sample_rod_physics()
             monitor.before_step(env)
             carrying = bool(getattr(env, "_flying_hand_carrying", False))
             link_monitor.before_step(env, carrying=carrying)
-            original_step(env, 1, save_freq=save_freq)
+            original_step(
+                env,
+                1,
+                save_freq=save_freq,
+                step_callback=step_callback,
+            )
             monitor.after_step(env)
             link_monitor.after_step(env, carrying=carrying)
             if video_recorder is not None:
@@ -711,6 +717,9 @@ def run_once(
         link_monitor.finish(task)
         result["task_success"] = bool(task.check_success())
         result["task_failed_flag"] = bool(task.task_failed)
+        result["grasp_validation"] = _json_value(
+            task.flying_hand_grasp_diagnostics
+        )
         result["rod_physics"] = {
             name: counts
             for name, counts in rod_physics.items()
@@ -781,7 +790,12 @@ def main():
     parser.add_argument("--task-config", default="flying_hand_clean")
     parser.add_argument("--tasks", nargs="+", default=list(DEFAULT_TASKS))
     parser.add_argument("--seeds", nargs="+", type=int, default=[0])
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=TEST_RESULTS_ROOT / "flying_hand_grasp_stability",
+        help="Output root (default: tests/results/flying_hand_grasp_stability).",
+    )
     parser.add_argument("--render-videos", action="store_true")
     parser.add_argument("--video-stride-steps", type=int)
     parser.add_argument("--worker-index", type=int, default=0)
@@ -790,21 +804,17 @@ def main():
 
     if args.worker_count <= 0 or not 0 <= args.worker_index < args.worker_count:
         parser.error("worker index must satisfy 0 <= worker-index < worker-count")
-    if args.render_videos and args.output_dir is None:
-        parser.error("--render-videos requires --output-dir")
     if args.video_stride_steps is not None and args.video_stride_steps <= 0:
         parser.error("--video-stride-steps must be positive")
 
     jobs = [(task_name, seed) for task_name in args.tasks for seed in args.seeds]
     jobs = [job for index, job in enumerate(jobs) if index % args.worker_count == args.worker_index]
-    output_file = None
-    trace_dir = None
-    if args.output_dir is not None:
-        workers_dir = args.output_dir / "workers"
-        trace_dir = args.output_dir / "link_traces"
-        workers_dir.mkdir(parents=True, exist_ok=True)
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        output_file = workers_dir / f"worker_{args.worker_index:02d}.jsonl"
+    output_dir = args.output_dir.resolve()
+    workers_dir = output_dir / "workers"
+    trace_dir = output_dir / "link_traces"
+    workers_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    output_file = workers_dir / f"worker_{args.worker_index:02d}.jsonl"
 
     for task_name, seed in jobs:
         trace_path = trace_dir / f"{task_name}__seed_{seed:03d}.npz" if trace_dir is not None else None
@@ -814,7 +824,7 @@ def main():
             seed,
             trace_path=trace_path,
             video_dir=(
-                args.output_dir / "videos" / f"{task_name}__seed_{seed:03d}"
+                output_dir / "videos" / f"{task_name}__seed_{seed:03d}"
                 if args.render_videos
                 else None
             ),
