@@ -57,6 +57,18 @@ class PI0:
 
     # Update the observation window buffer
     def update_observation_window(self, img_arr, state):
+        if isinstance(img_arr, dict):
+            img_front = np.asarray(img_arr["head_camera"])
+            img_wrist = np.asarray(img_arr["wrist_camera"])
+            self.observation_window = {
+                "state": np.asarray(state, dtype=np.float32),
+                "images": {
+                    "head_camera": np.transpose(img_front, (2, 0, 1)),
+                    "wrist_camera": np.transpose(img_wrist, (2, 0, 1)),
+                },
+                "prompt": self.instruction,
+            }
+            return
         img_front, img_right, img_left, puppet_arm = (
             img_arr[0],
             img_arr[1],

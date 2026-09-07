@@ -227,9 +227,11 @@ class WorldActionRobotWinPolicy:
         self.waypoint_diagnostics = []
         self.flight_diagnostics = self._empty_flight_diagnostics()
         self.actor_motion_diagnostics = {}
-        self._waypoint_reference_position = None
-        self._waypoint_reference_velocity = np.zeros(3)
-        self._waypoint_reference_orientation = None
+        self._previous_flight_velocity = None
+        self._previous_flight_speed = None
+        self._speed_derivative_candidate_sign = 0
+        self._speed_derivative_candidate_samples = 0
+        self._speed_derivative_stable_sign = 0
         self.episode_count = 0
         self.step_count = 0
         self._timing_rollout = {"infer_s": 0.0, "sim_s": 0.0}
@@ -354,61 +356,6 @@ class WorldActionRobotWinPolicy:
         denorm = normalizer.backward(action.to(dtype=torch.float32, device="cpu"))
         return denorm.numpy()
 
-    @staticmethod
-    def _flying_hand_relative_xyzyaw_to_world_pose(task_env, action: np.ndarray):
-        import sapien
-
-        relative_pose = sapien.Pose(
-            action[:3].tolist(),
-            [np.cos(action[3] / 2), 0, 0, np.sin(action[3] / 2)],
-        )
-        initial_imu_odom_pose = task_env.initial_imu_odom_pose
-        initial_root_pose = task_env.flying_hand_initial_pose
-        root_to_imu_initial = initial_root_pose.inv() * initial_imu_odom_pose
-        return initial_imu_odom_pose * relative_pose * root_to_imu_initial.inv()
-
-    def _advance_flying_hand_reference(
-        self,
-        task_env,
-        target_pose,
-        target_velocity,
-        target_acceleration,
-        carried_actor=None,
-        carried_pose=None,
-    ) -> None:
-        from envs.flying_hand import planner
-
-        if carried_actor is not None:
-            planner.begin_isolated_carry(task_env, carried_actor)
-        task_env.flying_hand_ref_pose = target_pose
-        if task_env.enable_dynamics:
-            hand_pose, hand_v = task_env.flying_hand_dynamics.step(
-                target_pose,
-                target_velocity,
-                target_acceleration,
-                task_env.is_grasping,
-            )
-            task_env.flying_hand.set_root_pose(hand_pose)
-            task_env.flying_hand.set_root_linear_velocity(hand_v.tolist())
-            task_env.flying_hand.set_root_angular_velocity(
-                task_env.flying_hand_dynamics.w.tolist()
-            )
-        else:
-            hand_pose, hand_v = target_pose, np.asarray(target_velocity, dtype=float)
-            planner.set_pose(task_env, hand_pose, hand_v)
-        if carried_actor is not None:
-            planner.set_isolated_carried_actor_target(
-                task_env,
-                carried_actor,
-                hand_pose * carried_pose,
-            )
-        planner.step(
-            task_env,
-            1,
-            save_freq=None,
-            step_callback=self._record_flight_sample,
-        )
-
     def _build_image_array(self, observation: Dict[str, Any]) -> np.ndarray:
         obs_data = observation["observation"]
         camera_images = []
@@ -506,6 +453,7 @@ class WorldActionRobotWinPolicy:
     def _empty_flight_diagnostics() -> Dict[str, Any]:
         return {
             "samples": 0,
+            "simulated_seconds": 0.0,
             "max_abs_roll_rad": 0.0,
             "max_abs_pitch_rad": 0.0,
             "max_abs_pitch_rate_rad_s": 0.0,
@@ -515,6 +463,14 @@ class WorldActionRobotWinPolicy:
             "large_pitch_events": [],
             "_large_pitch_active": False,
             "max_position_error_m": 0.0,
+            "position_error_squared_sum_m2": 0.0,
+            "position_error_samples": 0,
+            "max_actual_speed_mps": 0.0,
+            "actual_speed_sum_mps": 0.0,
+            "actual_acceleration_samples": 0,
+            "actual_acceleration_squared_sum_m2ps4": 0.0,
+            "max_actual_acceleration_mps2": 0.0,
+            "speed_accel_decel_phase_changes": 0,
         }
 
     @staticmethod
@@ -554,6 +510,10 @@ class WorldActionRobotWinPolicy:
 
     def _record_flight_sample(self, task_env) -> None:
         q = np.asarray(task_env.flying_hand.get_root_pose().q, dtype=float)
+        linear_velocity = np.asarray(
+            task_env.flying_hand.get_root_linear_velocity(),
+            dtype=float,
+        )
         angular_velocity = np.asarray(
             task_env.flying_hand.get_root_angular_velocity(),
             dtype=float,
@@ -563,6 +523,52 @@ class WorldActionRobotWinPolicy:
         pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
         diagnostics = self.flight_diagnostics
         diagnostics["samples"] += 1
+        diagnostics["simulated_seconds"] += float(task_env.sim_timestep)
+        speed = float(np.linalg.norm(linear_velocity))
+        diagnostics["actual_speed_sum_mps"] += speed
+        diagnostics["max_actual_speed_mps"] = max(
+            diagnostics["max_actual_speed_mps"],
+            speed,
+        )
+        if self._previous_flight_velocity is not None:
+            sim_dt = float(task_env.sim_timestep)
+            acceleration = (
+                linear_velocity - self._previous_flight_velocity
+            ) / sim_dt
+            acceleration_norm = float(np.linalg.norm(acceleration))
+            diagnostics["actual_acceleration_samples"] += 1
+            diagnostics["actual_acceleration_squared_sum_m2ps4"] += (
+                acceleration_norm * acceleration_norm
+            )
+            diagnostics["max_actual_acceleration_mps2"] = max(
+                diagnostics["max_actual_acceleration_mps2"],
+                acceleration_norm,
+            )
+            speed_derivative = (speed - self._previous_flight_speed) / sim_dt
+            derivative_sign = 0
+            if speed_derivative > 0.1:
+                derivative_sign = 1
+            elif speed_derivative < -0.1:
+                derivative_sign = -1
+            if derivative_sign == 0:
+                self._speed_derivative_candidate_sign = 0
+                self._speed_derivative_candidate_samples = 0
+            elif derivative_sign == self._speed_derivative_candidate_sign:
+                self._speed_derivative_candidate_samples += 1
+            else:
+                self._speed_derivative_candidate_sign = derivative_sign
+                self._speed_derivative_candidate_samples = 1
+            # Require 20 ms of consistent acceleration/deceleration before
+            # declaring a phase. This suppresses one-step PhysX/contact noise.
+            if self._speed_derivative_candidate_samples == 4:
+                if (
+                    self._speed_derivative_stable_sign != 0
+                    and derivative_sign != self._speed_derivative_stable_sign
+                ):
+                    diagnostics["speed_accel_decel_phase_changes"] += 1
+                self._speed_derivative_stable_sign = derivative_sign
+        self._previous_flight_velocity = linear_velocity.copy()
+        self._previous_flight_speed = speed
         for actor in getattr(task_env, "task_actors", ()):
             name = actor.get_name()
             pose = actor.get_pose()
@@ -687,6 +693,10 @@ class WorldActionRobotWinPolicy:
                 diagnostics["max_position_error_m"],
                 float(position_error),
             )
+            diagnostics["position_error_squared_sum_m2"] += float(
+                position_error * position_error
+            )
+            diagnostics["position_error_samples"] += 1
 
     def _grasp_states(self, task_env, actions: np.ndarray) -> np.ndarray:
         config = task_env.flying_hand_grasp_validation
@@ -772,203 +782,11 @@ class WorldActionRobotWinPolicy:
             self.gripper_state = "open"
             event["gripper_open_commanded"] = True
 
-    @staticmethod
-    def _limit_vector_norm(vector: np.ndarray, limit: float) -> np.ndarray:
-        norm = float(np.linalg.norm(vector))
-        if norm <= limit or norm == 0.0:
-            return vector
-        return vector * (limit / norm)
-
-    def _reset_waypoint_reference(self, task_env, pose=None) -> None:
-        pose = task_env.flying_hand.get_root_pose() if pose is None else pose
-        self._waypoint_reference_position = np.asarray(pose.p, dtype=float).copy()
-        self._waypoint_reference_velocity = np.zeros(3)
-        self._waypoint_reference_orientation = np.asarray(pose.q, dtype=float).copy()
-
-    @staticmethod
-    def _slerp_towards(
-        current: np.ndarray,
-        target: np.ndarray,
-        max_angle: float,
-    ) -> np.ndarray:
-        """Move a unit quaternion toward ``target`` by at most ``max_angle``."""
-        current = np.asarray(current, dtype=float)
-        target = np.asarray(target, dtype=float)
-        current /= np.linalg.norm(current)
-        target /= np.linalg.norm(target)
-        dot = float(np.dot(current, target))
-        if dot < 0.0:
-            target = -target
-            dot = -dot
-        dot = float(np.clip(dot, -1.0, 1.0))
-        angle = 2.0 * float(np.arccos(dot))
-        if angle <= max_angle or angle < 1.0e-9:
-            return target
-        fraction = max_angle / angle
-        half_angle = 0.5 * angle
-        sin_half_angle = float(np.sin(half_angle))
-        if sin_half_angle < 1.0e-9:
-            result = (1.0 - fraction) * current + fraction * target
-        else:
-            result = (
-                np.sin((1.0 - fraction) * half_angle) / sin_half_angle * current
-                + np.sin(fraction * half_angle) / sin_half_angle * target
-            )
-        return result / np.linalg.norm(result)
-
-    def _track_flying_hand_waypoints(
-        self,
-        task_env,
-        actions: np.ndarray,
-        grasp_states: Optional[np.ndarray] = None,
-    ) -> None:
-        """Track each 20 Hz model waypoint through a causal, non-optimizing limiter."""
-        import sapien
-
-        if len(actions) == 0:
-            return
-        steps = int(task_env.save_freq)
-        sim_dt = float(task_env.sim_timestep)
-        action_dt = steps * sim_dt
-        limits = task_env.flying_hand_waypoint_tracking
-        max_velocity = float(limits["max_velocity"])
-        max_acceleration = float(limits["max_acceleration"])
-        max_yaw_rate = float(limits["max_yaw_rate"])
-        poses = [
-            self._flying_hand_relative_xyzyaw_to_world_pose(task_env, action)
-            for action in actions
-        ]
-        if self._waypoint_reference_position is None:
-            self._reset_waypoint_reference(task_env)
-        previous_raw_position = np.asarray(
-            task_env.flying_hand.get_root_pose().p,
-            dtype=float,
-        )
-        max_waypoint_spacing = 0.0
-        max_reference_velocity = 0.0
-        max_reference_acceleration = 0.0
-        max_reference_lag = 0.0
-        safety_filter_adjustments = 0
-        safety_filter_vertical_first = 0
-        max_safety_filter_z_lift = 0.0
-        if grasp_states is not None and len(grasp_states) != len(actions):
-            raise ValueError("grasp_states must contain one state per waypoint")
-        for action_index, target_pose in enumerate(poses):
-            if (
-                grasp_states is not None
-                and bool(grasp_states[action_index]) != self.grasp_commanded
-            ):
-                self._apply_flying_hand_grasp_command(
-                    task_env,
-                    bool(grasp_states[action_index]),
-                    action_step=int(task_env.take_action_cnt + action_index),
-                )
-            target_filter = getattr(
-                task_env,
-                "filter_flying_hand_policy_target",
-                None,
-            )
-            if target_filter is not None:
-                current_reference_pose = sapien.Pose(
-                    self._waypoint_reference_position.tolist(),
-                    self._waypoint_reference_orientation.tolist(),
-                )
-                target_pose, safety_filter = target_filter(
-                    target_pose,
-                    current_reference_pose,
-                    carried_actor=self.attached_actor,
-                )
-                if safety_filter is not None:
-                    safety_filter_adjustments += 1
-                    safety_filter_vertical_first += int(
-                        safety_filter["vertical_first"]
-                    )
-                    max_safety_filter_z_lift = max(
-                        max_safety_filter_z_lift,
-                        float(safety_filter["z_lift_m"]),
-                    )
-            target_position = np.asarray(target_pose.p, dtype=float)
-            max_waypoint_spacing = max(
-                max_waypoint_spacing,
-                float(np.linalg.norm(target_position - previous_raw_position)),
-            )
-            previous_raw_position = target_position
-            target_orientation = np.asarray(target_pose.q, dtype=float)
-            for substep in range(steps):
-                remaining_time = max((steps - substep) * sim_dt, sim_dt)
-                desired_velocity = self._limit_vector_norm(
-                    (target_position - self._waypoint_reference_position) / remaining_time,
-                    max_velocity,
-                )
-                velocity_change = self._limit_vector_norm(
-                    desired_velocity - self._waypoint_reference_velocity,
-                    max_acceleration * sim_dt,
-                )
-                self._waypoint_reference_velocity += velocity_change
-                self._waypoint_reference_velocity = self._limit_vector_norm(
-                    self._waypoint_reference_velocity,
-                    max_velocity,
-                )
-                self._waypoint_reference_position += self._waypoint_reference_velocity * sim_dt
-                self._waypoint_reference_orientation = self._slerp_towards(
-                    self._waypoint_reference_orientation,
-                    target_orientation,
-                    max_yaw_rate * sim_dt,
-                )
-                reference_pose = sapien.Pose(
-                    self._waypoint_reference_position.tolist(),
-                    self._waypoint_reference_orientation.tolist(),
-                )
-                self._advance_flying_hand_reference(
-                    task_env,
-                    reference_pose,
-                    # Velocity is internal to the position-rate limiter only.
-                    # The flight controller intentionally receives zero desired
-                    # velocity/acceleration and tracks the bounded pose target.
-                    np.zeros(3),
-                    np.zeros(3),
-                    self.attached_actor,
-                    self.attached_pose,
-                )
-                max_reference_velocity = max(
-                    max_reference_velocity,
-                    float(np.linalg.norm(self._waypoint_reference_velocity)),
-                )
-                max_reference_acceleration = max(
-                    max_reference_acceleration,
-                    float(np.linalg.norm(velocity_change) / sim_dt),
-                )
-                max_reference_lag = max(
-                    max_reference_lag,
-                    float(np.linalg.norm(target_position - self._waypoint_reference_position)),
-                )
-
-        self.waypoint_diagnostics.append({
-            "segments": int(len(actions)),
-            "samples": int(len(actions) * steps),
-            "duration_seconds": float(len(actions) * action_dt),
-            "max_waypoint_spacing_m": max_waypoint_spacing,
-            "max_reference_velocity_mps": max_reference_velocity,
-            "max_reference_acceleration_mps2": max_reference_acceleration,
-            "max_reference_lag_m": max_reference_lag,
-            "safety_filter_adjustments": safety_filter_adjustments,
-            "safety_filter_vertical_first": safety_filter_vertical_first,
-            "max_safety_filter_z_lift_m": max_safety_filter_z_lift,
-            "interpolation": "causal_slew_limited_position_reference",
-        })
-
     def _execute_flying_hand_waypoint_chunk(self, task_env, actions: np.ndarray) -> int:
-        """Track a full fixed-cadence chunk and apply gripper edges immediately."""
-        if len(actions) == 0:
-            return 0
-        states = self._grasp_states(task_env, actions)
-        self._record_action_chunk(task_env, actions)
-        self._track_flying_hand_waypoints(
-            task_env,
-            actions,
-            grasp_states=states,
-        )
-        return int(len(actions))
+        """Use the same Flying-Hand executor as DP, ACT, and Pi policies."""
+        from envs.flying_hand.eval_control import execute_action_chunk
+
+        return execute_action_chunk(task_env, self, actions)
 
     def should_request_observation(self) -> bool:
         return not self.pending_actions
@@ -994,8 +812,7 @@ class WorldActionRobotWinPolicy:
                 f"Expected flying-hand waypoint chunk [T, 5], got {tuple(action.shape)}"
             )
         consumed_actions = self._execute_flying_hand_waypoint_chunk(task_env, action)
-        task_env.take_action_cnt += consumed_actions
-        task_env.eval_success = task_env.check_success()
+        # The shared executor performs episode accounting and success checks.
         if self.timing_enabled:
             self._timing_rollout["sim_s"] += time.perf_counter() - sim_t0
         self.step_count += 1
@@ -1015,6 +832,23 @@ class WorldActionRobotWinPolicy:
         flight.pop("_large_pitch_active", None)
         flight["max_abs_roll_deg"] = float(np.degrees(flight["max_abs_roll_rad"]))
         flight["max_abs_pitch_deg"] = float(np.degrees(flight["max_abs_pitch_rad"]))
+        acceleration_samples = int(flight["actual_acceleration_samples"])
+        flight["rms_actual_acceleration_mps2"] = float(np.sqrt(
+            flight["actual_acceleration_squared_sum_m2ps4"]
+            / max(acceleration_samples, 1)
+        ))
+        flight["mean_actual_speed_mps"] = float(
+            flight["actual_speed_sum_mps"] / max(int(flight["samples"]), 1)
+        )
+        position_error_samples = int(flight["position_error_samples"])
+        flight["rms_position_error_m"] = float(np.sqrt(
+            flight["position_error_squared_sum_m2"]
+            / max(position_error_samples, 1)
+        ))
+        flight["speed_accel_decel_phase_changes_per_second"] = float(
+            flight["speed_accel_decel_phase_changes"]
+            / max(float(flight["simulated_seconds"]), 1.0e-12)
+        )
         return {
             "flight": flight,
             "actions": dict(self.action_diagnostics),
@@ -1028,6 +862,8 @@ class WorldActionRobotWinPolicy:
         }
 
     def reset(self) -> None:
+        from envs.flying_hand.eval_control import reset_reference
+
         self.pending_actions.clear()
         self.attached_actor = None
         self.attached_pose = None
@@ -1038,9 +874,12 @@ class WorldActionRobotWinPolicy:
         self.waypoint_diagnostics = []
         self.flight_diagnostics = self._empty_flight_diagnostics()
         self.actor_motion_diagnostics = {}
-        self._waypoint_reference_position = None
-        self._waypoint_reference_velocity = np.zeros(3)
-        self._waypoint_reference_orientation = None
+        reset_reference(self)
+        self._previous_flight_velocity = None
+        self._previous_flight_speed = None
+        self._speed_derivative_candidate_sign = 0
+        self._speed_derivative_candidate_samples = 0
+        self._speed_derivative_stable_sign = 0
         self.episode_count += 1
         self.step_count = 0
         self.reset_timing_rollout()

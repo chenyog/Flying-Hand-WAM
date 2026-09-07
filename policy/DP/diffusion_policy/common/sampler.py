@@ -1,11 +1,13 @@
 from typing import Optional
 import numpy as np
-import numba
+try:
+    import numba
+except ImportError:  # Optional performance dependency; numpy implementation remains correct.
+    numba = None
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 
 
-@numba.jit(nopython=True)
-def create_indices(
+def _create_indices(
     episode_ends: np.ndarray,
     sequence_length: int,
     episode_mask: np.ndarray,
@@ -46,6 +48,9 @@ def create_indices(
             indices.append([buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx])
     indices = np.array(indices)
     return indices
+
+
+create_indices = numba.jit(_create_indices, nopython=True) if numba is not None else _create_indices
 
 
 def get_val_mask(n_episodes, val_ratio, seed=0):

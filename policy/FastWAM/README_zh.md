@@ -47,7 +47,7 @@ FastWAM/
 ├── runs/                     # 训练输出（ckpt、日志）
 ├── checkpoints/              # 预训练或外部 checkpoint
 ├── data/                     # data目录
-└── evaluate_results/         # 推理/评估结果
+└── ../eval_results/fastwam/  # 推理/评估结果
 ```
 
 ## 环境安装

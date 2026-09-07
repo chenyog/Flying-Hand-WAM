@@ -173,6 +173,10 @@ def _aggregate(rows):
     successes = sum(bool(row.get("task_success", False)) for row in rows)
     status_counts = Counter(str(row.get("status", "error")) for row in rows)
     planner = Counter()
+    non_carried_physx_samples = 0
+    non_carried_physx_disabled_samples = 0
+    rod_physx_samples = 0
+    rod_physx_disabled_samples = 0
     for row in rows:
         values = _planner_values(row)
         planner["phase_count"] += values["phase_count"]
@@ -187,6 +191,14 @@ def _aggregate(rows):
         planner["reach_wait_time_s"] += values["reach_wait_time_s"]
         planner["initial_cost"] += values["initial_cost"]
         planner["final_cost"] += values["final_cost"]
+        for counts in (row.get("non_carried_actor_physics") or {}).values():
+            non_carried_physx_samples += int(counts.get("samples", 0))
+            non_carried_physx_disabled_samples += int(
+                counts.get("disabled_samples", 0)
+            )
+        for counts in (row.get("rod_physics") or {}).values():
+            rod_physx_samples += int(counts.get("samples", 0))
+            rod_physx_disabled_samples += int(counts.get("disabled_samples", 0))
     result = {
         "jobs": total,
         "task_successes": successes,
@@ -197,6 +209,12 @@ def _aggregate(rows):
             name: int(count) for name, count in sorted(status_counts.items()) if name not in STATUS_NAMES
         },
         "planner": dict(planner),
+        "non_carried_physx_samples": non_carried_physx_samples,
+        "non_carried_physx_disabled_samples": (
+            non_carried_physx_disabled_samples
+        ),
+        "rod_physx_samples": rod_physx_samples,
+        "rod_physx_disabled_samples": rod_physx_disabled_samples,
     }
     result["planner"]["cost_reduction"] = (
         result["planner"]["initial_cost"] - result["planner"]["final_cost"]
@@ -229,6 +247,12 @@ def _csv_row(task, aggregate):
         "planner_initial_cost": planner["initial_cost"],
         "planner_final_cost": planner["final_cost"],
         "planner_cost_reduction": planner["cost_reduction"],
+        "non_carried_physx_samples": aggregate["non_carried_physx_samples"],
+        "non_carried_physx_disabled_samples": aggregate[
+            "non_carried_physx_disabled_samples"
+        ],
+        "rod_physx_samples": aggregate["rod_physx_samples"],
+        "rod_physx_disabled_samples": aggregate["rod_physx_disabled_samples"],
     }
 
 

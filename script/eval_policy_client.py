@@ -243,6 +243,8 @@ def main(usr_args):
 
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+    for key in args.keys() & usr_args.keys():
+        args[key] = usr_args[key]
 
     args['task_name'] = task_name
     args["task_config"] = task_config
@@ -287,7 +289,11 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    eval_output_dir = usr_args.get("eval_output_dir")
+    if eval_output_dir is None or str(eval_output_dir).strip().lower() in {"", "none", "null"}:
+        save_dir = Path(f"eval_results/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    else:
+        save_dir = Path(eval_output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
@@ -329,7 +335,7 @@ def main(usr_args):
 
     st_seed = 100000 * (1 + seed)
     suc_nums = []
-    test_num = 100
+    test_num = int(usr_args.get("eval_num_episodes", 100))
     topk = 1
 
     # model = get_model(usr_args)
@@ -500,6 +506,7 @@ def parse_args_and_config():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int)
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--eval_output_dir", type=str)
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -510,20 +517,20 @@ def parse_args_and_config():
 
     # Parse overrides
     def parse_override_pairs(pairs):
+        if len(pairs) % 2 != 0:
+            parser.error("--overrides requires KEY VALUE pairs")
         override_dict = {}
         for i in range(0, len(pairs), 2):
             key = pairs[i].lstrip("--")
-            value = pairs[i + 1]
-            try:
-                value = eval(value)
-            except:
-                pass
+            value = yaml.safe_load(pairs[i + 1])
             override_dict[key] = value
         return override_dict
 
     if args.overrides:
         overrides = parse_override_pairs(args.overrides)
         config.update(overrides)
+    if args.eval_output_dir is not None:
+        config["eval_output_dir"] = args.eval_output_dir
 
     return config
 

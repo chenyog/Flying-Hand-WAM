@@ -317,7 +317,7 @@ class thread_ring_rod(FlyingHandBaseTask):
             phase_name="ring_exit_target_rod",
         )
         self.finish_flying_hand_record(save_freq)
-        self.info["info"] = {"{A}": "ring", "{B}": "target black rod"}
+        self.info["info"] = {"{A}": "ring", "{B}": "target rod"}
         return self.info
 
     def check_success(self):

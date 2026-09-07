@@ -81,7 +81,7 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(filtered.p[:2], current.p[:2])
-        self.assertAlmostEqual(filtered.p[2], 1.09)
+        self.assertAlmostEqual(filtered.p[2], 1.045)
         self.assertTrue(diagnostic["vertical_first"])
         self.assertEqual(diagnostic["actor"], "green block")
 
@@ -113,7 +113,7 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
             carried_actor=carried,
         )
 
-        self.assertAlmostEqual(filtered.p[2], 1.18, places=6)
+        self.assertAlmostEqual(filtered.p[2], 1.135, places=6)
         self.assertEqual(diagnostic["actor"], "blue block")
 
     def test_expert_isolated_carry_rejects_invalid_box_center(self):
@@ -135,6 +135,33 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
             "isolated_carry_start",
         )
 
+    def test_expert_isolated_carry_disables_only_the_carried_actor(self):
+        actor = _Actor("carried block", [0.10, 0.0, -0.04])
+        env = _environment(actor)
+        env._isolated_carried_actor_state = None
+        env._released_actor_collision_state = None
+        env.flying_hand_grasp_diagnostics = []
+        carried_component = mock.Mock(is_enabled=True)
+        stale_exclusion_hook = mock.Mock(
+            side_effect=AssertionError("carry must not inspect scene exclusions")
+        )
+        env._get_isolated_carry_exclusions = stale_exclusion_hook
+
+        with mock.patch.object(
+            planner,
+            "_dynamic_components",
+            return_value=[carried_component],
+        ):
+            planner.begin_isolated_carry(env, actor)
+
+        carried_component.disable.assert_called_once_with()
+        stale_exclusion_hook.assert_not_called()
+        self.assertIs(env._isolated_carried_actor_state["actor"], actor)
+        self.assertNotIn(
+            "excluded_components",
+            env._isolated_carried_actor_state,
+        )
+
     def test_scripted_follow_stops_if_target_box_center_leaves_region(self):
         actor = _Actor("block", [0.10, 0.0, -0.04])
         env = _environment(actor)
@@ -146,7 +173,6 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
             "actor": actor,
             "components": [],
             "enabled": [],
-            "excluded_components": [],
         }
 
         with self.assertRaises(UnStableError):
@@ -441,6 +467,9 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
             diagnostic["duration_seconds"],
             0.1,
         )
+        self.assertEqual(diagnostic["controller_reference_mode"], "zero")
+        self.assertEqual(diagnostic["max_controller_velocity_reference_mps"], 0.0)
+        self.assertEqual(diagnostic["max_controller_acceleration_reference_mps2"], 0.0)
 
     def test_grasp_edge_keeps_full_fixed_cadence_chunk(self):
         policy = WorldActionRobotWinPolicy.__new__(WorldActionRobotWinPolicy)

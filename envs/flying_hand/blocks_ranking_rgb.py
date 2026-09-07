@@ -10,19 +10,20 @@ from . import planner
 class blocks_ranking_rgb(FlyingHandBaseTask):
     block_half_size = np.array([0.025, 0.025, 0.045])
     block_mass = 0.05
-    block_y_offsets = [-0.28, 0.0, 0.28]
+    # Keep the three ordered slots close enough to leave a fourth, temporary
+    # staging location on the same shelf.  Ranking never requires one block to
+    # be placed on another block.
+    block_y_offsets = [-0.18, 0.0, 0.18]
     pre_grasp_x_offset = -0.55
     grasp_x_offset = -0.10
     pull_out_x_offset = -0.54
     grasp_y_offset = 0.02
-    # Keep the flying-hand's u_center clear of the shelf and neighboring
-    # blocks.  The object itself remains supported by the shelf until grasp.
-    # Keep the gripper's lower links above a supporting block when grasping the
-    # top object of a temporary two-block stack. The old 0.05 m grasp offset
-    # swept both blocks during closure in the five-move ranking cases.
-    pre_grasp_z_offset = 0.16
-    grasp_z_offset = 0.090
-    pull_out_z_offset = 0.28
+    # Match the proven size-ranking grasp height.  The u-center is only 45 mm
+    # above the block center, so the fingers enter the block's physical span
+    # instead of closing above it.
+    pre_grasp_z_offset = 0.13
+    grasp_z_offset = 0.045
+    pull_out_z_offset = 0.34
     place_pre_z_offset = 0.08
     release_retreat_z_offset = 0.10
     release_lift_seconds = 0.6
@@ -41,6 +42,7 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
             self.shelf_width / 2 - half_y - max(self.block_y_offsets),
         )
         ys = np.array([source_y + dy for dy in self.block_y_offsets])
+        self.target_ys = ys
         self.order = np.array([[1, 0, 2], [2, 1, 0], [0, 2, 1], [1, 2, 0], [2, 0, 1]][np.random.randint(5)])
         self.blocks = [
             self._create_block("red block", self.source_slot_id, ys[self.order[0]], (1, 0, 0)),
@@ -72,6 +74,36 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         self.add_task_objects(block)
         return self._place_actor_on_shelf(block, slot_id, y=y)
 
+    def _staging_y(self):
+        center_y = float(np.mean(self.target_ys))
+        slot_y, _ = self.board_slots[self.source_slot_id]
+        half_y = float(self.block_half_size[1] + self.shelf_object_gap)
+        low = slot_y - self.shelf_width / 2 + half_y
+        high = slot_y + self.shelf_width / 2 - half_y
+        candidates = [
+            center_y + 0.30,
+            center_y - 0.30,
+            center_y + 0.27,
+            center_y - 0.27,
+        ]
+        valid = [y for y in candidates if low <= y <= high]
+        if not valid:
+            valid = [
+                float(np.clip(center_y + 0.27, low, high)),
+                float(np.clip(center_y - 0.27, low, high)),
+            ]
+        return max(
+            valid,
+            key=lambda y: min(abs(y - target_y) for target_y in self.target_ys),
+        )
+
+    def _staging_center(self, block):
+        return np.array([
+            self._block_x(),
+            self.staging_y,
+            self.board_slots[self.source_slot_id][1] + self.block_half_size[2],
+        ])
+
     def _get_block_grasp_pose(self, block, x_offset, z_offset=0.0):
         bounds = self._get_actor_world_bounds(block)
         center = (bounds[0] + bounds[1]) / 2
@@ -94,8 +126,8 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
         horizontal target. This task-local guard only enforces the same
         vertical clearance used by the expert trajectory. If the current
         reference is too low, horizontal motion pauses until the reference has
-        climbed above the block; this avoids sweeping through a stack while
-        the acceleration limiter catches up in z.
+        climbed to the grasp height; this avoids sweeping through a neighboring
+        block while the acceleration limiter catches up in z.
         """
         if not self.policy_block_clearance_enabled:
             return target_pose, None
@@ -122,8 +154,7 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
             return target_pose, None
 
         # A wide gripper can overlap two neighboring blocks. Protect against
-        # the tallest nearby obstacle instead of only the nearest centerline;
-        # this also handles a two-block stack without a separate stack flag.
+        # the tallest nearby obstacle instead of only the nearest centerline.
         _, block, center = max(nearby, key=lambda item: item[0])
         safe_u_z = float(center[2] + self.grasp_z_offset)
         if target_u[2] >= safe_u_z:
@@ -198,39 +229,51 @@ class blocks_ranking_rgb(FlyingHandBaseTask):
 
     def play_once(self):
         save_freq = self.start_flying_hand_record()
-        start = tuple((int(block),) for block in np.argsort(self.order))
-        goal = ((0,), (1,), (2,))
-        queue = [start]
-        seen = {start: []}
-        for state in queue:
-            if state == goal:
-                break
-            for src, stack in enumerate(state):
-                if not stack:
-                    continue
-                for dst in range(3):
-                    if src == dst or len(state[dst]) >= 2:
-                        continue
-                    nxt = [list(s) for s in state]
-                    block = nxt[src].pop()
-                    nxt[dst].append(block)
-                    nxt = tuple(tuple(s) for s in nxt)
-                    if nxt not in seen:
-                        seen[nxt] = seen[state] + [(src, dst, block)]
-                        queue.append(nxt)
-
-        stacks = [list(s) for s in start]
+        self.staging_y = self._staging_y()
+        positions = [None] * 3
+        for block, pos in enumerate(self.order):
+            positions[int(pos)] = int(block)
         pose = self.flying_hand_initial_pose
         retreat = None
-        for i, (src, dst, block) in enumerate(seen[goal]):
-            target = (
-                self.blocks[stacks[dst][-1]].get_pose().p + np.array([0.0, 0.0, self.block_half_size[2] * 2])
-                if stacks[dst]
-                else self.target_centers[dst]
+        staging_block = None
+        for pos in range(3):
+            if positions[pos] == pos:
+                continue
+            block = positions[pos]
+            pose, retreat = self._move_block(
+                pose,
+                self.blocks[block],
+                self._staging_center(block),
+                save_freq,
+                retreat,
             )
-            pose, retreat = self._move_block(pose, self.blocks[block], target, save_freq, retreat, i == len(seen[goal]) - 1)
-            stacks[src].pop()
-            stacks[dst].append(block)
+            positions[pos] = None
+            staging_block = block
+            empty_pos = pos
+            while True:
+                target_block = empty_pos
+                if staging_block == target_block:
+                    pose, retreat = self._move_block(
+                        pose,
+                        self.blocks[staging_block],
+                        self.target_centers[empty_pos],
+                        save_freq,
+                        retreat,
+                    )
+                    positions[empty_pos] = staging_block
+                    staging_block = None
+                    break
+                src = positions.index(target_block)
+                pose, retreat = self._move_block(
+                    pose,
+                    self.blocks[target_block],
+                    self.target_centers[empty_pos],
+                    save_freq,
+                    retreat,
+                )
+                positions[empty_pos] = target_block
+                positions[src] = None
+                empty_pos = src
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {
             "{A}": "red block",

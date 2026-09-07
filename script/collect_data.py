@@ -12,6 +12,9 @@ import importlib
 import json
 import traceback
 import os
+import fcntl
+import h5py
+import subprocess
 import time
 from argparse import ArgumentParser
 
@@ -19,12 +22,17 @@ current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
 
 
-def class_decorator(task_name):
+def class_decorator(task_name, task_namespace=None):
+    module_name = (
+        f"{task_namespace}/{task_name}"
+        if task_namespace is not None
+        else task_name
+    )
     try:
-        env_class = load_task_class(task_name)
+        env_class = load_task_class(module_name)
         env_instance = env_class()
-    except:
-        raise SystemExit("No such task")
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+        raise SystemExit(f"No such task: {module_name}") from exc
     return env_instance
 
 
@@ -35,17 +43,39 @@ def get_embodiment_config(robot_file):
     return embodiment_args
 
 
-def main(task_name=None, task_config=None):
-
-    task = class_decorator(task_name)
+def main(
+    task_name=None,
+    task_config=None,
+    episode_num=None,
+    save_path=None,
+    data_worker_index=0,
+    data_worker_count=1,
+):
     config_path = f"./task_config/{task_config}.yml"
 
     with open(config_path, "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
 
     args['task_name'] = task_name
-
     embodiment_type = args.get("embodiment")
+    task_namespace = "flying_hand" if "flying-hand" in embodiment_type else None
+    task = class_decorator(task_name, task_namespace=task_namespace)
+    args["task_namespace"] = task_namespace
+    if episode_num is not None:
+        if episode_num <= 0:
+            raise ValueError("episode_num must be positive")
+        args["episode_num"] = episode_num
+    if save_path is not None:
+        args["save_path"] = save_path
+    if data_worker_count <= 0:
+        raise ValueError("data_worker_count must be positive")
+    if not 0 <= data_worker_index < data_worker_count:
+        raise ValueError(
+            "data_worker_index must be in [0, data_worker_count)"
+        )
+    args["data_worker_index"] = data_worker_index
+    args["data_worker_count"] = data_worker_count
+
     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
 
     with open(embodiment_config_path, "r", encoding="utf-8") as f:
@@ -102,7 +132,12 @@ def main(task_name=None, task_config=None):
 
     args["embodiment_name"] = embodiment_name
     args['task_config'] = task_config
-    args["save_path"] = os.path.join(args["save_path"], str(args["task_name"]), args["task_config"])
+    args["data_root"] = args["save_path"]
+    args["save_path"] = os.path.join(
+        args["data_root"],
+        str(args["task_name"]),
+        args["task_config"],
+    )
     run(task, args)
 
 
@@ -193,16 +228,62 @@ def run(TASK_ENV, args):
 
         clear_cache_freq = args["clear_cache_freq"]
 
-        st_idx = 0
+        data_worker_index = args.get("data_worker_index", 0)
+        data_worker_count = args.get("data_worker_count", 1)
 
-        def exist_hdf5(idx):
-            file_path = os.path.join(args["save_path"], 'data', f'episode{idx}.hdf5')
-            return os.path.exists(file_path)
+        def episode_data_complete(idx):
+            file_path = os.path.join(
+                args["save_path"],
+                "data",
+                f"episode{idx}.hdf5",
+            )
+            if not os.path.exists(file_path):
+                return False
+            if args.get("task_namespace") != "flying_hand":
+                return True
 
-        while exist_hdf5(st_idx):
-            st_idx += 1
+            try:
+                with h5py.File(file_path, "r") as file:
+                    dataset_paths = [
+                        "flying_hand/actual_state",
+                        "flying_hand/target_state",
+                    ]
+                    dataset_paths.extend(
+                        f"observation/{camera_name}/rgb"
+                        for camera_name in args["camera"]["video_cameras"]
+                    )
+                    frame_counts = [
+                        file[path].shape[0]
+                        for path in dataset_paths
+                    ]
+            except (KeyError, OSError):
+                return False
 
-        for episode_idx in range(st_idx, args["episode_num"]):
+            if min(frame_counts, default=0) <= 0:
+                return False
+            if len(set(frame_counts)) != 1:
+                return False
+
+            for camera_name in args["camera"]["video_cameras"]:
+                video_path = os.path.join(
+                    args["save_path"],
+                    "video",
+                    camera_name,
+                    f"episode{idx}.mp4",
+                )
+                if not os.path.exists(video_path):
+                    return False
+                if os.path.getsize(video_path) == 0:
+                    return False
+            return True
+
+        for episode_idx in range(
+            data_worker_index,
+            args["episode_num"],
+            data_worker_count,
+        ):
+            if episode_data_complete(episode_idx):
+                continue
             print(f"\033[34mTask name: {args['task_name']}\033[0m")
 
             TASK_ENV.setup_demo(now_ep_num=episode_idx, seed=seed_list[episode_idx], **args)
@@ -214,26 +295,60 @@ def run(TASK_ENV, args):
 
             info_file_path = os.path.join(args["save_path"], "scene_info.json")
 
-            if not os.path.exists(info_file_path):
-                with open(info_file_path, "w", encoding="utf-8") as file:
-                    json.dump({}, file, ensure_ascii=False)
-
-            with open(info_file_path, "r", encoding="utf-8") as file:
-                info_db = json.load(file)
-
             info = TASK_ENV.play_once()
-            info_db[f"episode_{episode_idx}"] = info
-
-            with open(info_file_path, "w", encoding="utf-8") as file:
+            os.makedirs(os.path.dirname(info_file_path), exist_ok=True)
+            with open(info_file_path, "a+", encoding="utf-8") as file:
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX)
+                file.seek(0)
+                contents = file.read()
+                info_db = json.loads(contents) if contents.strip() else {}
+                info_db[f"episode_{episode_idx}"] = info
+                info_db = {
+                    key: info_db[key]
+                    for key in sorted(
+                        info_db,
+                        key=lambda value: int(
+                            value.removeprefix("episode_")
+                        ),
+                    )
+                }
+                file.seek(0)
+                file.truncate()
                 json.dump(info_db, file, ensure_ascii=False, indent=4)
+                file.flush()
+                os.fsync(file.fileno())
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
 
             TASK_ENV.close_env(clear_cache=((episode_idx + 1) % clear_cache_freq == 0))
             TASK_ENV.merge_pkl_to_hdf5_video()
             TASK_ENV.remove_data_cache()
             assert TASK_ENV.check_success(), "Collect Error"
 
-        command = f"cd description && bash gen_episode_instructions.sh {args['task_name']} {args['task_config']} {args['language_num']}"
-        os.system(command)
+        if data_worker_count > 1:
+            print(
+                "Data shard complete; generate instructions after all "
+                "workers finish."
+            )
+            return
+
+        command = [
+            sys.executable,
+            os.path.join(
+                parent_directory,
+                "../description/utils/generate_episode_instructions.py",
+            ),
+            args["task_name"],
+            args["task_config"],
+            str(args["language_num"]),
+            "--save-path",
+            args["data_root"],
+        ]
+        if args["task_namespace"] is not None:
+            command.extend([
+                "--instruction-namespace",
+                args["task_namespace"],
+            ])
+        subprocess.run(command, check=True)
 
 
 if __name__ == "__main__":
@@ -247,8 +362,19 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("task_name", type=str)
     parser.add_argument("task_config", type=str)
+    parser.add_argument("--episode-num", type=int)
+    parser.add_argument("--save-path", type=str)
+    parser.add_argument("--data-worker-index", type=int, default=0)
+    parser.add_argument("--data-worker-count", type=int, default=1)
     parser = parser.parse_args()
     task_name = parser.task_name
     task_config = parser.task_config
 
-    main(task_name=task_name, task_config=task_config)
+    main(
+        task_name=task_name,
+        task_config=task_config,
+        episode_num=parser.episode_num,
+        save_path=parser.save_path,
+        data_worker_index=parser.data_worker_index,
+        data_worker_count=parser.data_worker_count,
+    )

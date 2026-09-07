@@ -13,8 +13,12 @@ train:
     - ./data/flying_hand_lerobot/stack_blocks_two_size
   shape_meta:
     images:
+      # Current simulator/collected RGB shapes, expressed as [C, H, W].
+      # ZED2 is the cropped 480x360 head view; Large_HBVCAM_F2209HD is
+      # the native 640x480 wrist view.
       - key: head_camera
         raw_shape: [3, 360, 480]
+        # Both cameras are 4:3, so this resize preserves their aspect ratio.
         shape: [3, 192, 256]
       - key: wrist_camera
         raw_shape: [3, 480, 640]
@@ -30,6 +34,7 @@ train:
   num_frames: 33
   global_sample_stride: 1
   action_video_freq_ratio: 4
+  # [H, W] after horizontally concatenating two 192x256 camera images.
   video_size: [192, 512]
   camera_key: null
   val_set_proportion: 0.0

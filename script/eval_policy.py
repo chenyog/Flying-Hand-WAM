@@ -96,6 +96,12 @@ def get_eval_video_fps(args):
     return int(round(fps)) if abs(fps - round(fps)) < 1e-6 else fps
 
 
+def apply_task_overrides(task_args, usr_args):
+    """Apply command-line values that correspond to task YAML fields."""
+    for key in task_args.keys() & usr_args.keys():
+        task_args[key] = usr_args[key]
+
+
 def main(usr_args):
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_name = usr_args["task_name"]
@@ -111,6 +117,7 @@ def main(usr_args):
 
     with open(f"./task_config/{task_config}.yml", "r", encoding="utf-8") as f:
         args = yaml.load(f.read(), Loader=yaml.FullLoader)
+    apply_task_overrides(args, usr_args)
 
     args['task_name'] = task_name
     args["task_config"] = task_config
@@ -160,7 +167,7 @@ def main(usr_args):
 
     eval_output_dir = usr_args.get("eval_output_dir")
     if eval_output_dir is None or str(eval_output_dir).strip().lower() in {"", "none", "null"}:
-        save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+        save_dir = Path(f"eval_results/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
     else:
         save_dir = Path(eval_output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -417,14 +424,12 @@ def parse_args_and_config():
 
     # Parse overrides
     def parse_override_pairs(pairs):
+        if len(pairs) % 2 != 0:
+            parser.error("--overrides requires KEY VALUE pairs")
         override_dict = {}
         for i in range(0, len(pairs), 2):
             key = pairs[i].lstrip("--")
-            value = pairs[i + 1]
-            try:
-                value = eval(value)
-            except:
-                pass
+            value = yaml.safe_load(pairs[i + 1])
             override_dict[key] = value
         return override_dict
 

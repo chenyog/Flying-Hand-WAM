@@ -83,6 +83,10 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
 
+    def forward(self, batch):
+        """Expose the training loss for DistributedDataParallel."""
+        return self.compute_loss(batch)
+
     # ========= inference  ============
     def conditional_sample(
         self,

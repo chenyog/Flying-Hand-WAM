@@ -8,10 +8,19 @@ parent_directory = os.path.dirname(current_file_path)
 sys.path.append(parent_directory)
 
 from pi_model import *
+from envs.flying_hand.eval_control import execute_action_chunk, is_flying_hand_observation, reset_reference
 
 
 # Encode observation for the model
 def encode_obs(observation):
+    if is_flying_hand_observation(observation):
+        return {
+            "images": {
+                "head_camera": observation["observation"]["head_camera"]["rgb"],
+                "wrist_camera": observation["observation"]["wrist_camera"]["rgb"],
+            },
+            "state": np.asarray(observation["flying_hand"]["actual_state"], dtype=np.float32),
+        }
     input_rgb_arr = [
         observation["observation"]["head_camera"]["rgb"],
         observation["observation"]["right_camera"]["rgb"],
@@ -34,7 +43,14 @@ def eval(TASK_ENV, model, observation):
         instruction = TASK_ENV.get_instruction()
         model.set_language(instruction)
 
-    input_rgb_arr, input_state = encode_obs(observation)
+    encoded = encode_obs(observation)
+    if is_flying_hand_observation(observation):
+        model.update_observation_window(encoded["images"], encoded["state"])
+        actions = model.get_action()
+        execute_action_chunk(TASK_ENV, model, actions)
+        return TASK_ENV.get_obs()
+
+    input_rgb_arr, input_state = encoded
     model.update_observation_window(input_rgb_arr, input_state)
 
     # ======== Get Action ========
@@ -52,3 +68,4 @@ def eval(TASK_ENV, model, observation):
 
 def reset_model(model):
     model.reset_obsrvationwindows()
+    reset_reference(model)

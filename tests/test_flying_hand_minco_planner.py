@@ -168,6 +168,36 @@ class FlyingHandMincoPlannerTest(unittest.TestCase):
         self.assertGreater(result.function_evaluations, 0)
         self.assertGreaterEqual(result.optimization_wall_time_seconds, 0.0)
 
+    def test_time_optimizer_accepts_explicit_positive_initial_durations(self):
+        poses = [
+            _pose([0.0, 0.0, 0.0]),
+            _pose([0.20, 0.0, 0.04]),
+            _pose([0.45, 0.0, 0.12]),
+        ]
+        requested = np.array([0.90, 1.05])
+        optimizer = planner.MincoTimeOptimizer(
+            planner.MincoOptimizationConfig(max_iteration=80)
+        )
+
+        result = optimizer.optimize(poses, initial_times=requested)
+
+        self.assertTrue(result.success, result.message)
+        np.testing.assert_allclose(result.initial_times, requested)
+        self.assertTrue(np.all(result.times > 0.0))
+
+    def test_time_optimizer_rejects_invalid_explicit_initial_durations(self):
+        poses = [
+            _pose([0.0, 0.0, 0.0]),
+            _pose([0.20, 0.0, 0.04]),
+            _pose([0.45, 0.0, 0.12]),
+        ]
+        optimizer = planner.MincoTimeOptimizer(planner.MincoOptimizationConfig())
+
+        for invalid in ([1.0], [1.0, 0.0], [1.0, float("nan")]):
+            with self.subTest(initial_times=invalid):
+                with self.assertRaises(ValueError):
+                    optimizer.optimize(poses, initial_times=invalid)
+
     def test_safety_retiming_enforces_hard_motion_limits(self):
         points = np.array([
             [0.0, 0.0, 0.0],

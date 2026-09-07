@@ -47,7 +47,7 @@ FastWAM/
 ├── runs/                     # Training outputs (ckpt, logs)
 ├── checkpoints/              # Pretrained or external checkpoints
 ├── data/                     # Data directory
-└── evaluate_results/         # Inference / evaluation results
+└── ../eval_results/fastwam/  # Inference / evaluation results
 ```
 
 ## Environment Setup

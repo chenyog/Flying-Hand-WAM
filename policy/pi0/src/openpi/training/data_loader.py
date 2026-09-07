@@ -2,11 +2,13 @@ from collections.abc import Iterator, Sequence
 import multiprocessing
 import os
 import typing
+from pathlib import Path
 from typing import Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
+from lerobot.common.constants import HF_LEROBOT_HOME
 import numpy as np
 import torch
 
@@ -91,13 +93,40 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    dataset_root = Path(HF_LEROBOT_HOME) / repo_id
+    if data_config.local_files_only:
+        required_metadata = (
+            "meta/info.json",
+            "meta/tasks.jsonl",
+            "meta/episodes.jsonl",
+            "meta/episodes_stats.jsonl",
+        )
+        missing_metadata = [path for path in required_metadata if not (dataset_root / path).is_file()]
+        if missing_metadata:
+            raise FileNotFoundError(
+                f"Local LeRobot dataset is incomplete at {dataset_root}; missing {missing_metadata}. "
+                "Set HF_LEROBOT_HOME or disable local_files_only to allow downloading."
+            )
+
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=dataset_root)
+    if data_config.local_files_only:
+        missing_episodes = [
+            dataset_meta.get_data_file_path(episode_index)
+            for episode_index in range(dataset_meta.total_episodes)
+            if not (dataset_root / dataset_meta.get_data_file_path(episode_index)).is_file()
+        ]
+        if missing_episodes:
+            raise FileNotFoundError(
+                f"Local LeRobot dataset is missing {len(missing_episodes)} episode files at {dataset_root}."
+            )
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        root=dataset_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(model_config.action_horizon)]
             for key in data_config.action_sequence_keys
         },
+        download_videos=not data_config.local_files_only,
     )
 
     if data_config.prompt_from_task:

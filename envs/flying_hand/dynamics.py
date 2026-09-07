@@ -92,10 +92,14 @@ class FlyingHandDynamics:
         self.k_vel = _vec(cfg["control"]["k_vel"])
         self.k_att = _vec(cfg["control"]["k_att"])
         self.k_omega = _vec(cfg["control"]["k_omega"])
-        self.bodyrates_max = _vec(cfg["limits"]["bodyrates_max"])
-        self.thrust_min = np.array(cfg["limits"]["rotor_thrusts_min"], dtype=float)
-        self.thrust_max = np.array(cfg["limits"]["rotor_thrusts_max"], dtype=float)
-        self.tilt_max = float(cfg["limits"]["tilt_angle_max"])
+        limits = cfg["limits"]
+        self.bodyrates_max = _vec(limits["bodyrates_max"])
+        self.thrust_min = np.array(limits["rotor_thrusts_min"], dtype=float)
+        self.thrust_max = np.array(limits["rotor_thrusts_max"], dtype=float)
+        self.rotor_thrust_limits_enabled = bool(limits.get("rotor_thrusts_enabled", True))
+        self.tilt_angle_limit_enabled = bool(limits.get("tilt_angle_enabled", True))
+        self.bodyrates_limit_enabled = bool(limits.get("bodyrates_enabled", True))
+        self.tilt_max = float(limits["tilt_angle_max"])
         self.ct = float(cfg["rotor"]["thrust_coeff"])
         self.cq = float(cfg["rotor"]["moment_coeff"])
         e = cfg["estimator"]
@@ -184,7 +188,7 @@ class FlyingHandDynamics:
 
         a_des = ref_a + self.k_pos * (ref_p - self.p) + self.k_vel * (ref_v - self.v)
         f = self.mass * (a_des + np.array([0.0, 0.0, G])) - r @ self.force_l1
-        if self.tilt_max > 0:
+        if self.tilt_angle_limit_enabled and self.tilt_max > 0:
             z = _unit(f)
             tilt = np.arccos(np.clip(z[2], -1.0, 1.0))
             if tilt > self.tilt_max:
@@ -196,11 +200,13 @@ class FlyingHandDynamics:
         qe = _qmul(_qinv(self.q), q_des)
         if qe[0] < 0:
             qe *= -1
-        desired_bodyrates = np.clip(
-            self.k_att * (2 * qe[1:]),
-            -self.bodyrates_max,
-            self.bodyrates_max,
-        )
+        desired_bodyrates = self.k_att * (2 * qe[1:])
+        if self.bodyrates_limit_enabled:
+            desired_bodyrates = np.clip(
+                desired_bodyrates,
+                -self.bodyrates_max,
+                self.bodyrates_max,
+            )
         bodyrate_error = t3d.quaternions.quat2mat(qe) @ desired_bodyrates - self.w
         desired_angular_acceleration = self.k_omega * bodyrate_error
         torque = (
@@ -212,7 +218,16 @@ class FlyingHandDynamics:
         thrust = max(float(f.dot(r[:, 2])), 0.0)
         u = np.r_[thrust, torque]
         g = self.allocation(grasped)
-        rot_thrust = _clip_rotor_thrusts(np.linalg.solve(g, u), thrust, self.thrust_min, self.thrust_max)
+        unconstrained_rotor_thrust = np.linalg.solve(g, u)
+        if self.rotor_thrust_limits_enabled:
+            rot_thrust = _clip_rotor_thrusts(
+                unconstrained_rotor_thrust,
+                thrust,
+                self.thrust_min,
+                self.thrust_max,
+            )
+        else:
+            rot_thrust = unconstrained_rotor_thrust
         thrust, torque = (g @ rot_thrust)[0], (g @ rot_thrust)[1:]
         self.prev_v = self.v.copy()
         self.prev_w = self.w.copy()
@@ -236,6 +251,9 @@ class FlyingHandDynamics:
             "torque_applied": torque.copy(),
             "torque_allocation_error": torque - torque_command,
             "desired_bodyrates": desired_bodyrates.copy(),
+            "rotor_thrust_limits_enabled": self.rotor_thrust_limits_enabled,
+            "tilt_angle_limit_enabled": self.tilt_angle_limit_enabled,
+            "bodyrates_limit_enabled": self.bodyrates_limit_enabled,
             "bodyrate_error": bodyrate_error.copy(),
             "desired_angular_acceleration": desired_angular_acceleration.copy(),
             "estimator_enabled": self.estimator_enabled,

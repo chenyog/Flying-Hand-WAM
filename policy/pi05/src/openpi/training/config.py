@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.flying_hand_policy as flying_hand_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -88,6 +89,11 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+
+    # If true, require the LeRobot dataset to already be present in the local cache.
+    # The pi05 data loader uses the cache-backed LeRobot API and validates the local
+    # dataset root before constructing the dataset when this is enabled.
+    local_files_only: bool = False
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -272,6 +278,41 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=self.repack_transforms,
             data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotFlyingHandDataConfig(DataConfigFactory):
+    """LeRobot configuration for RoboTwin Flying-Hand datasets."""
+
+    default_prompt: str | None = None
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default_factory=lambda: _transforms.Group(inputs=[
+            _transforms.RepackTransform({
+                "images": {
+                    "head_camera": "observation.images.head_camera",
+                    "wrist_camera": "observation.images.wrist_camera",
+                },
+                "state": "observation.state",
+                "actions": "action",
+                "prompt": "prompt",
+            })
+        ])
+    )
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=_transforms.Group(
+                inputs=[flying_hand_policy.FlyingHandInputs(action_dim=model_config.action_dim)],
+                outputs=[flying_hand_policy.FlyingHandOutputs()],
+            ),
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
         )
@@ -552,6 +593,86 @@ _CONFIGS = [
     ###
     ### finetune config for robotwin
     ###
+    TrainConfig(
+        name="pi05_flying_hand_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32,
+            action_horizon=32,
+        ),
+        data=LeRobotFlyingHandDataConfig(
+            repo_id="flying_hand_all_tasks",
+            base_config=DataConfig(local_files_only=True, prompt_from_task=True),
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32,
+            action_horizon=32,
+        ).get_freeze_filter(),
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi05/checkpoints/pi05_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=1,
+    ),
+    TrainConfig(
+        name="pi05_flying_hand_lora_fsdp",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32,
+            action_horizon=32,
+        ),
+        data=LeRobotFlyingHandDataConfig(
+            repo_id="flying_hand_all_tasks",
+            base_config=DataConfig(local_files_only=True, prompt_from_task=True),
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            action_dim=32,
+            action_horizon=32,
+        ).get_freeze_filter(),
+        # This is the global batch. The helper can override it and fsdp_devices for
+        # a different visible-device count without changing the dataset pipeline.
+        batch_size=32,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi05/checkpoints/pi05_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=2,
+    ),
+    TrainConfig(
+        name="pi05_flying_hand_full",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            action_dim=32,
+            action_horizon=32,
+        ),
+        data=LeRobotFlyingHandDataConfig(
+            repo_id="flying_hand_all_tasks",
+            base_config=DataConfig(local_files_only=True, prompt_from_task=True),
+        ),
+        # No LoRA variant is used, so get_freeze_filter() returns nnx.Nothing
+        # and all model parameters are trainable.
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b",
+            action_expert_variant="gemma_300m",
+            action_dim=32,
+            action_horizon=32,
+        ).get_freeze_filter(),
+        # Conservative global batch for full fine-tuning; override after checking VRAM.
+        batch_size=8,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi05/checkpoints/pi05_base/params"),
+        num_train_steps=30000,
+        fsdp_devices=8,
+    ),
     # pi05_base by full
     TrainConfig(
         name="pi05_aloha_full_base",

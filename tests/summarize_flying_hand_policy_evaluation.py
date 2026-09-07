@@ -32,6 +32,26 @@ def _load_rows(input_dirs):
 
 def _aggregate(rows):
     pitches = [float(row["flight"]["max_abs_pitch_deg"]) for row in rows]
+    total_flight_seconds = sum(
+        float(row["flight"].get("simulated_seconds", 0.0)) for row in rows
+    )
+    total_flight_samples = sum(
+        int(row["flight"].get("samples", 0)) for row in rows
+    )
+    acceleration_samples = sum(
+        int(row["flight"].get("actual_acceleration_samples", 0)) for row in rows
+    )
+    acceleration_squared_sum = sum(
+        float(row["flight"].get("actual_acceleration_squared_sum_m2ps4", 0.0))
+        for row in rows
+    )
+    position_error_samples = sum(
+        int(row["flight"].get("position_error_samples", 0)) for row in rows
+    )
+    position_error_squared_sum = sum(
+        float(row["flight"].get("position_error_squared_sum_m2", 0.0))
+        for row in rows
+    )
     grasp_events = [event for row in rows for event in row.get("grasp_events", [])]
     command_latency_values = [
         float(event["command_latency_seconds"])
@@ -76,6 +96,17 @@ def _aggregate(rows):
         for row in rows
         for track in row.get("waypoint_tracking", [])
     ]
+    waypoint_endpoint_count = sum(
+        int(track.get("waypoint_endpoint_count", 0)) for track in waypoint_tracks
+    )
+    endpoint_actual_target_lag_sum = sum(
+        float(track.get("sum_endpoint_actual_target_lag_m", 0.0))
+        for track in waypoint_tracks
+    )
+    endpoint_actual_target_lag_squared_sum = sum(
+        float(track.get("sum_endpoint_actual_target_lag_squared_m2", 0.0))
+        for track in waypoint_tracks
+    )
     max_bodyrate = [
         max(
             float(row["flight"].get("max_abs_bodyrate_rad_s", [0.0, 0.0, 0.0])[axis])
@@ -129,6 +160,37 @@ def _aggregate(rows):
         "rotor_saturation_samples": sum(
             int(row["flight"].get("rotor_saturation_samples", 0)) for row in rows
         ),
+        "controller_reference_modes": sorted({
+            str(track.get("controller_reference_mode", "unknown"))
+            for track in waypoint_tracks
+        }),
+        "mean_actual_speed_mps": (
+            sum(float(row["flight"].get("actual_speed_sum_mps", 0.0)) for row in rows)
+            / max(total_flight_samples, 1)
+        ),
+        "max_actual_speed_mps": max(
+            float(row["flight"].get("max_actual_speed_mps", 0.0)) for row in rows
+        ),
+        "rms_actual_acceleration_mps2": (
+            acceleration_squared_sum / max(acceleration_samples, 1)
+        ) ** 0.5,
+        "max_actual_acceleration_mps2": max(
+            float(row["flight"].get("max_actual_acceleration_mps2", 0.0))
+            for row in rows
+        ),
+        "speed_accel_decel_phase_changes": sum(
+            int(row["flight"].get("speed_accel_decel_phase_changes", 0))
+            for row in rows
+        ),
+        "speed_accel_decel_phase_changes_per_second": (
+            sum(
+                int(row["flight"].get("speed_accel_decel_phase_changes", 0))
+                for row in rows
+            ) / max(total_flight_seconds, 1.0e-12)
+        ),
+        "rms_position_error_m": (
+            position_error_squared_sum / max(position_error_samples, 1)
+        ) ** 0.5,
         "max_position_error_m": max(
             float(row["flight"].get("max_position_error_m", 0.0)) for row in rows
         ),
@@ -165,6 +227,37 @@ def _aggregate(rows):
         "max_reference_lag_m": max(
             (float(track.get("max_reference_lag_m", 0.0)) for track in waypoint_tracks),
             default=0.0,
+        ),
+        "max_controller_velocity_reference_mps": max(
+            (
+                float(track.get("max_controller_velocity_reference_mps", 0.0))
+                for track in waypoint_tracks
+            ),
+            default=0.0,
+        ),
+        "max_controller_acceleration_reference_mps2": max(
+            (
+                float(track.get("max_controller_acceleration_reference_mps2", 0.0))
+                for track in waypoint_tracks
+            ),
+            default=0.0,
+        ),
+        "mean_waypoint_endpoint_actual_target_lag_m": (
+            endpoint_actual_target_lag_sum / max(waypoint_endpoint_count, 1)
+        ),
+        "rms_waypoint_endpoint_actual_target_lag_m": (
+            endpoint_actual_target_lag_squared_sum / max(waypoint_endpoint_count, 1)
+        ) ** 0.5,
+        "max_waypoint_endpoint_actual_target_lag_m": max(
+            (
+                float(track.get("max_endpoint_actual_target_lag_m", 0.0))
+                for track in waypoint_tracks
+            ),
+            default=0.0,
+        ),
+        "waypoint_endpoint_within_5cm_rate": (
+            sum(int(track.get("endpoint_target_within_5cm", 0)) for track in waypoint_tracks)
+            / max(waypoint_endpoint_count, 1)
         ),
         "total_waypoint_trajectory_seconds": sum(
             float(track.get("duration_seconds", 0.0)) for track in waypoint_tracks
@@ -236,8 +329,23 @@ def summarize(input_dirs, output_dir: Path, expected_episodes: int | None):
         f"{[round(value, 3) for value in total['max_abs_bodyrate_rad_s']]} rad/s",
         f"- Episodes with >=15 deg pitch excursion: {total['episodes_with_large_pitch']}",
         f"- Rotor saturation samples: {total['rotor_saturation_samples']}",
+        f"- Controller reference mode(s): {total['controller_reference_modes']}",
+        f"- Actual acceleration RMS / max: "
+        f"{total['rms_actual_acceleration_mps2']:.3f} / "
+        f"{total['max_actual_acceleration_mps2']:.3f} m/s^2",
+        f"- Sustained acceleration/deceleration phase changes: "
+        f"{total['speed_accel_decel_phase_changes']} "
+        f"({total['speed_accel_decel_phase_changes_per_second']:.3f}/s)",
         f"- Maximum raw-waypoint/reference lag: {total['max_reference_lag_m']:.3f} m",
-        f"- Maximum controller position error: {total['max_position_error_m']:.3f} m",
+        f"- Controller position-error RMS / max: "
+        f"{total['rms_position_error_m']:.3f} / "
+        f"{total['max_position_error_m']:.3f} m",
+        f"- Waypoint-end actual/target lag mean / RMS / max: "
+        f"{total['mean_waypoint_endpoint_actual_target_lag_m']:.3f} / "
+        f"{total['rms_waypoint_endpoint_actual_target_lag_m']:.3f} / "
+        f"{total['max_waypoint_endpoint_actual_target_lag_m']:.3f} m",
+        f"- Waypoint endpoints within 5 cm: "
+        f"{total['waypoint_endpoint_within_5cm_rate']:.1%}",
         f"- Invalid actor attachments: {total['invalid_attachments']}",
         f"- Valid actor attachment events: {total['attachments']}",
         f"- Rejected box-center captures: {total['rejected_captures']}",

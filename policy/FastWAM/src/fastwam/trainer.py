@@ -3,6 +3,7 @@ import json
 import inspect
 import os
 import re
+import shutil
 from math import ceil
 from pathlib import Path
 import time
@@ -41,6 +42,9 @@ class Wan22Trainer:
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
         self.save_every = int(cfg.save_every)
+        self.checkpoint_keep_last = int(cfg.get("checkpoint_keep_last", 1))
+        if self.checkpoint_keep_last <= 0:
+            raise ValueError("`checkpoint_keep_last` must be a positive integer.")
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
@@ -580,6 +584,64 @@ class Wan22Trainer:
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)
 
+    @staticmethod
+    def _checkpoint_step(path: Path, *, is_weights: bool):
+        pattern = r"step_(\d+)\.pt" if is_weights else r"step_(\d+)"
+        match = re.fullmatch(pattern, path.name)
+        return int(match.group(1)) if match is not None else None
+
+    def _prune_old_checkpoints(self, current_step: int):
+        weights_root = Path(self.weights_dir)
+        state_root = Path(self.state_dir)
+        weights_by_step = {
+            step: path
+            for path in weights_root.iterdir()
+            if path.is_file()
+            and (step := self._checkpoint_step(path, is_weights=True)) is not None
+        }
+        states_by_step = {
+            step: path
+            for path in state_root.iterdir()
+            if path.is_dir()
+            and (step := self._checkpoint_step(path, is_weights=False)) is not None
+        }
+
+        complete_steps = sorted(set(weights_by_step) & set(states_by_step))
+        if not complete_steps:
+            raise RuntimeError(
+                "Checkpoint pruning requires at least one complete weights/state pair."
+            )
+        if current_step not in complete_steps:
+            raise RuntimeError(
+                "The checkpoint saved at the current step is not a complete "
+                f"weights/state pair: step={current_step}."
+            )
+        older_steps = [step for step in complete_steps if step != current_step]
+        keep_steps = {current_step}
+        keep_steps.update(
+            older_steps[-max(self.checkpoint_keep_last - 1, 0) :]
+            if self.checkpoint_keep_last > 1
+            else []
+        )
+
+        removed_weights = []
+        for step, path in sorted(weights_by_step.items()):
+            if step not in keep_steps:
+                path.unlink()
+                removed_weights.append(str(path))
+
+        removed_states = []
+        for step, path in sorted(states_by_step.items()):
+            if step not in keep_steps:
+                shutil.rmtree(path)
+                removed_states.append(str(path))
+
+        return {
+            "kept_steps": sorted(keep_steps),
+            "removed_weights": removed_weights,
+            "removed_states": removed_states,
+        }
+
     def save_checkpoint(self):
         step_tag = f"step_{self.global_step:06d}"
 
@@ -594,6 +656,18 @@ class Wan22Trainer:
         self.accelerator.save_state(output_dir=state_path)
         if self.accelerator.is_main_process:
             self._save_trainer_state(state_path)
+        self.accelerator.wait_for_everyone()
+
+        if self.accelerator.is_main_process:
+            retention = self._prune_old_checkpoints(current_step=self.global_step)
+            logger.info(
+                "[ckpt] retention keep_last=%d kept_steps=%s "
+                "removed_weights=%d removed_states=%d",
+                self.checkpoint_keep_last,
+                retention["kept_steps"],
+                len(retention["removed_weights"]),
+                len(retention["removed_states"]),
+            )
         self.accelerator.wait_for_everyone()
 
         return {"weights_path": ckpt_path, "state_path": state_path}

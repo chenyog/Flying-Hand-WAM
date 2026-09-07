@@ -82,10 +82,6 @@ class FlyingHandBaseTask(gym.Env):
     def setup_demo(self, **kwags):
         self._init_flying_hand_task_env_(**kwags)
 
-    def _get_isolated_carry_exclusions(self, actor):
-        """Return scene entities to disable while an actor is carried in isolation."""
-        return ()
-
     def _init_flying_hand_task_env_(self, table_xy_bias=[0, 0], table_height_bias=0, **kwags):
         super().__init__()
         np.random.seed(kwags.get("seed", 0))
@@ -103,8 +99,10 @@ class FlyingHandBaseTask(gym.Env):
         self.eval_mode = kwags.get("eval_mode", False)
         self.eval_video_path = kwags.get("eval_video_save_dir", None)
         self.save_freq = kwags.get("save_freq", 15)
+        self.flying_hand_record_save_freq = None
         self.enable_dynamics = kwags.get("enable_dynamics", False)
         self.flying_hand_config = self._load_flying_hand_config()
+        self._apply_task_flying_hand_overrides(kwags)
         self.minco_optimization_config = planner.MincoOptimizationConfig.from_mapping(
             self.flying_hand_config["minco_optimization"]
         )
@@ -271,6 +269,31 @@ class FlyingHandBaseTask(gym.Env):
         merge(config, control_config)
         return config
 
+    def _apply_task_flying_hand_overrides(self, task_args):
+        """Apply Flying-Hand-only overrides from the selected task YAML.
+
+        The embodiment config remains the source of the physical defaults;
+        task YAMLs can explicitly select controller ablations without
+        changing those defaults for every task.
+        """
+
+        def merge(target, update):
+            if not isinstance(update, dict):
+                raise ValueError("Flying-Hand config overrides must be mappings")
+            for key, value in update.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    merge(target[key], value)
+                else:
+                    target[key] = deepcopy(value)
+
+        dynamics_override = task_args.get("flying_hand_dynamics")
+        if dynamics_override is not None:
+            merge(self.flying_hand_config["dynamics"], dynamics_override)
+
+        trajectory_override = task_args.get("trajectory_execution")
+        if trajectory_override is not None:
+            merge(self.flying_hand_config["trajectory_execution"], trajectory_override)
+
     def _apply_flying_hand_config(self):
         material_config = self.flying_hand_config["materials"]
         self.flying_hand_black_color = material_config["black_color"]
@@ -301,6 +324,18 @@ class FlyingHandBaseTask(gym.Env):
             "center_bounds_min": center_min,
             "center_bounds_max": center_max,
         }
+        trajectory_config = self.flying_hand_config["trajectory_execution"]
+        self.flying_hand_trajectory_execution = {
+            "waypoint_hz": float(trajectory_config["waypoint_hz"]),
+            "sample_hz": float(trajectory_config["sample_hz"]),
+            "direct_record_hz": float(trajectory_config["direct_record_hz"]),
+        }
+        if (
+            self.flying_hand_trajectory_execution["waypoint_hz"] <= 0.0
+            or self.flying_hand_trajectory_execution["sample_hz"] <= 0.0
+            or self.flying_hand_trajectory_execution["direct_record_hz"] <= 0.0
+        ):
+            raise ValueError("Flying-Hand trajectory frequencies must be positive")
         waypoint_config = self.flying_hand_config["waypoint_tracking"]
         self.flying_hand_waypoint_tracking = {
             key: float(waypoint_config[key])
@@ -873,6 +908,13 @@ class FlyingHandBaseTask(gym.Env):
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
         self.reset_flying_hand_trajectory()
         save_freq = self.save_freq if self.save_data else -1
+        # Direct demonstrations are kinematic references.  When explicitly
+        # requested by the task YAML, retain every controller-rate sample so
+        # the saved trajectory follows the optimized MINCO curve at 200 Hz.
+        if save_freq > 0 and not self.enable_dynamics:
+            record_hz = self.flying_hand_trajectory_execution["direct_record_hz"]
+            save_freq = max(1, int(round(1.0 / (self.sim_timestep * record_hz))))
+        self.flying_hand_record_save_freq = save_freq
         self._save_flying_hand_frame(save_freq, force=True)
         return save_freq
 
@@ -888,7 +930,10 @@ class FlyingHandBaseTask(gym.Env):
             self.folder_path["cache"],
             f"{self.save_dir}/data/episode{self.ep_num}.hdf5",
             {name: f"{self.save_dir}/video/{name}/episode{self.ep_num}.mp4" for name in cameras},
-            fps=1.0 / (float(self.sim_timestep) * float(self.save_freq)),
+            fps=1.0 / (
+                float(self.sim_timestep)
+                * float(self.flying_hand_record_save_freq or self.save_freq)
+            ),
         )
 
     def save_traj_data(self, idx):

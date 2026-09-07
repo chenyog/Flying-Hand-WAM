@@ -1,0 +1,14 @@
+{
+    "sim-flying_hand-all-tasks": {
+        "dataset_dir": "processed_data/sim-flying_hand/all-tasks",
+        "num_episodes": 1000,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist"
+        ],
+        "robot_type": "flying_hand",
+        "action_dim": 5,
+        "source_task_config": "flying_hand_clean"
+    }
+}

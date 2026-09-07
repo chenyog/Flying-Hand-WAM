@@ -2,7 +2,8 @@ import numpy as np
 import torch
 import os
 import h5py
-from torch.utils.data import TensorDataset, DataLoader
+from collections import OrderedDict
+from torch.utils.data import DataLoader, DistributedSampler
 
 import IPython
 
@@ -11,49 +12,68 @@ e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
 
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, max_action_len):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, max_action_len,
+                 action_horizon=None):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
         self.max_action_len = max_action_len
+        self.action_horizon = max_action_len if action_horizon is None else int(action_horizon)
+        if self.action_horizon <= 0:
+            raise ValueError("action_horizon must be positive")
+        # Handles are created lazily inside each worker. Keeping a small LRU
+        # avoids repeated open/close calls without exhausting file descriptors.
+        self._h5_cache = OrderedDict()
+        self._max_cached_files = 8
         self.is_sim = None
-        self.__getitem__(0)  # initialize self.is_sim
 
     def __len__(self):
         return len(self.episode_ids)
+
+    def _get_h5_file(self, dataset_path):
+        root = self._h5_cache.pop(dataset_path, None)
+        if root is None:
+            root = h5py.File(dataset_path, "r")
+        self._h5_cache[dataset_path] = root
+        while len(self._h5_cache) > self._max_cached_files:
+            _, stale_root = self._h5_cache.popitem(last=False)
+            stale_root.close()
+        return root
 
     def __getitem__(self, index):
         sample_full_episode = False
 
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
-        with h5py.File(dataset_path, "r") as root:
-            is_sim = None
-            original_action_shape = root["/action"].shape
-            episode_len = original_action_shape[0]
-            if sample_full_episode:
-                start_ts = 0
-            else:
-                start_ts = np.random.choice(episode_len)
-            # get observation at start_ts only
-            qpos = root["/observations/qpos"][start_ts]
-            image_dict = dict()
-            for cam_name in self.camera_names:
-                image_dict[cam_name] = root[f"/observations/images/{cam_name}"][start_ts]
-            # get all actions after and including start_ts
-            if is_sim:
-                action = root["/action"][start_ts:]
-                action_len = episode_len - start_ts
-            else:
-                action = root["/action"][max(0, start_ts - 1):]  # hack, to make timesteps more aligned
-                action_len = episode_len - max(0, start_ts - 1)  # hack, to make timesteps more aligned
+        root = self._get_h5_file(dataset_path)
+        is_sim = None
+        original_action_shape = root["/action"].shape
+        episode_len = original_action_shape[0]
+        if sample_full_episode:
+            start_ts = 0
+        else:
+            start_ts = np.random.choice(episode_len)
+        # get observation at start_ts only
+        qpos = root["/observations/qpos"][start_ts]
+        image_dict = dict()
+        for cam_name in self.camera_names:
+            image_dict[cam_name] = root[f"/observations/images/{cam_name}"][start_ts]
+        # ACT only consumes the first action_horizon targets. Reading the
+        # full remaining episode creates unnecessary HDF5 and CPU work.
+        if is_sim:
+            action_start = start_ts
+        else:
+            action_start = max(0, start_ts - 1)  # keep existing alignment hack
+        action_end = min(action_start + self.action_horizon, episode_len)
+        action = root["/action"][action_start:action_end]
+        action_len = action.shape[0]
 
         self.is_sim = is_sim
-        padded_action = np.zeros((self.max_action_len, action.shape[1]), dtype=np.float32)  # 根据max_action_len初始化
+        padded_action = np.zeros((self.action_horizon, action.shape[1]), dtype=np.float32)
         padded_action[:action_len] = action
-        is_pad = np.ones(self.max_action_len, dtype=bool)  # 初始化为全1（True）
+        is_pad = np.ones(self.action_horizon, dtype=bool)
         is_pad[:action_len] = 0  # 前action_len个位置设置为0（False），表示非填充部分
 
         # new axis for different cameras
@@ -61,18 +81,16 @@ class EpisodicDataset(torch.utils.data.Dataset):
         for cam_name in self.camera_names:
             all_cam_images.append(image_dict[cam_name])
         all_cam_images = np.stack(all_cam_images, axis=0)
+        all_cam_images = np.ascontiguousarray(all_cam_images.transpose(0, 3, 1, 2))
 
         # construct observations
+        # Keep images uint8 until the non-blocking GPU transfer to reduce host
+        # memory and PCIe traffic compared with float32 images.
         image_data = torch.from_numpy(all_cam_images)
         qpos_data = torch.from_numpy(qpos).float()
         action_data = torch.from_numpy(padded_action).float()
         is_pad = torch.from_numpy(is_pad).bool()
 
-        # channel last
-        image_data = torch.einsum("k h w c -> k c h w", image_data)
-
-        # normalize image and change dtype to float
-        image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
@@ -136,7 +154,11 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats, max_action_len
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
+              distributed=False, rank=0, world_size=1, num_workers=1,
+              action_horizon=None):
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
     print(f"\nData from: {dataset_dir}\n")
     # obtain train test split
     train_ratio = 0.8
@@ -148,23 +170,39 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, max_action_len)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, max_action_len)
+    train_dataset = EpisodicDataset(
+        train_indices, dataset_dir, camera_names, norm_stats, max_action_len,
+        action_horizon=action_horizon)
+    val_dataset = EpisodicDataset(
+        val_indices, dataset_dir, camera_names, norm_stats, max_action_len,
+        action_horizon=action_horizon)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank,
+                                       shuffle=True) if distributed else None
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank,
+                                     shuffle=False) if distributed else None
+    loader_options = {
+        "pin_memory": True,
+        "num_workers": num_workers,
+    }
+    if num_workers > 0:
+        loader_options.update({
+            "prefetch_factor": 2,
+            "persistent_workers": True,
+        })
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size_train,
-        shuffle=True,
-        pin_memory=True,
-        num_workers=1,
-        prefetch_factor=1,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
+        **loader_options,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size_val,
-        shuffle=True,
-        pin_memory=True,
-        num_workers=1,
-        prefetch_factor=1,
+        shuffle=val_sampler is None,
+        sampler=val_sampler,
+        **loader_options,
     )
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim

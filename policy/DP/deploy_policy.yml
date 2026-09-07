@@ -8,4 +8,6 @@ instruction_type: unseen
 
 expert_data_num: null
 checkpoint_num: 600
+checkpoint_path: null
+device: cuda:0
 head_camera_type: D435

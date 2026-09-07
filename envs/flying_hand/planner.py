@@ -118,28 +118,13 @@ def _begin_isolated_carry(env, actor):
     components = _dynamic_components(actor)
     if not components:
         raise ValueError(f"Carried actor {actor.get_name()!r} has no dynamic component")
-    excluded_components = []
-    for entity in env._get_isolated_carry_exclusions(actor):
-        for component in entity.components:
-            if isinstance(
-                component,
-                (
-                    sapien.physx.PhysxRigidDynamicComponent,
-                    sapien.physx.PhysxRigidStaticComponent,
-                ),
-            ):
-                excluded_components.append((component, bool(component.is_enabled)))
-
     env._isolated_carried_actor_state = {
         "actor": actor,
         "components": components,
         "enabled": [bool(component.is_enabled) for component in components],
-        "excluded_components": excluded_components,
         "grasp_diagnostic": diagnostic,
     }
     for component in components:
-        component.disable()
-    for component, _ in excluded_components:
         component.disable()
 
 
@@ -192,9 +177,6 @@ def restore_isolated_carried_actor(env, suppress_gripper_collisions=False):
     pose = state["actor"].get_pose()
     if suppress_gripper_collisions:
         _suppress_released_actor_gripper_collisions(env, state["actor"])
-    for component, was_enabled in state["excluded_components"]:
-        if was_enabled:
-            component.enable()
     for component, was_enabled in zip(state["components"], state["enabled"]):
         component.set_entity_pose(pose)
         component.set_linear_velocity([0, 0, 0])
@@ -540,8 +522,22 @@ class MincoTimeOptimizer:
                 times *= 1.5
         return times
 
-    def optimize(self, poses, initial_yaw_rate=0.0):
-        initial_times = self._initial_times(poses, initial_yaw_rate)
+    def optimize(self, poses, initial_yaw_rate=0.0, initial_times=None):
+        if initial_times is None:
+            initial_times = self._initial_times(poses, initial_yaw_rate)
+        else:
+            initial_times = np.asarray(initial_times, dtype=float)
+            expected_shape = (len(poses) - 1,)
+            if (
+                initial_times.shape != expected_shape
+                or not np.all(np.isfinite(initial_times))
+                or np.any(initial_times <= 0.0)
+            ):
+                raise ValueError(
+                    "initial_times must contain one finite positive value "
+                    "per optimized segment"
+                )
+            initial_times = initial_times.copy()
         points = np.asarray([pose.p for pose in poses], dtype=float)
         yaw_points = _minco_yaw_points(poses)
         yaw_rates = np.array([initial_yaw_rate, 0.0], dtype=float)
@@ -673,8 +669,13 @@ def plan_and_move_minco(
     carried_pose=None,
     phase_name=None,
     step_callback=None,
+    initial_time_hints=None,
 ):
-    """Optimize task-path segment times, then execute the resulting MINCO path."""
+    """Optimize task-path segment times, then execute the resulting MINCO path.
+
+    ``initial_time_hints`` optionally seeds the C++ optimizer after waypoint
+    densification. The resulting segment durations remain optimization variables.
+    """
     if len(poses) < 2:
         raise ValueError("A planned MINCO move requires at least two poses")
     config = env.minco_time_optimizer.config
@@ -703,9 +704,17 @@ def plan_and_move_minco(
         config.plan_max_dyaw,
     ))
     dense_poses = _densify_plan(poses, config)
+    if initial_time_hints is not None:
+        initial_time_hints = np.asarray(initial_time_hints, dtype=float)
+        if initial_time_hints.shape != (len(dense_poses) - 1,):
+            raise ValueError(
+                "initial_time_hints must contain one value per densified "
+                "MINCO segment"
+            )
     result = env.minco_time_optimizer.optimize(
         dense_poses,
         initial_yaw_rate=initial_yaw_rate,
+        initial_times=initial_time_hints,
     )
     phase_index = len(env.minco_plan_diagnostics)
     diagnostic = result.as_dict()
@@ -719,6 +728,9 @@ def plan_and_move_minco(
             np.asarray(pose.p, dtype=float).tolist() for pose in dense_poses
         ],
         "legacy_time_hints": time_hints.tolist(),
+        "optimizer_initial_time_hints": (
+            None if initial_time_hints is None else initial_time_hints.tolist()
+        ),
         "start_position_error_m": start_position_error,
         "start_yaw_error_rad": start_yaw_error,
         "measured_initial_yaw_rate_rad_s": measured_initial_yaw_rate,
@@ -804,6 +816,7 @@ class TaskMotionPlanner:
         carried_pose=None,
         gripper_after_reach=None,
         gripper_qpos=None,
+        initial_time_hints=None,
     ):
         result = plan_and_move_minco(
             self.env,
@@ -813,6 +826,7 @@ class TaskMotionPlanner:
             carried_actor=carried_actor,
             carried_pose=carried_pose,
             phase_name=phase_name,
+            initial_time_hints=initial_time_hints,
         )
         if gripper_after_reach is not None:
             self.set_gripper(

@@ -13,6 +13,7 @@ eval_video/
 
 # eval result
 eval_result/
+eval_results/
 
 # Code Generation
 assets/*

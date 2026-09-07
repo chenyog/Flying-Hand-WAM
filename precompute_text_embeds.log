@@ -1,0 +1,1 @@
+[2026-09-04 11:23:15,980][__main__][INFO] - Multi-GPU available. To use it, run: torchrun --standalone --nproc_per_node=8 scripts/precompute_text_embeds.py

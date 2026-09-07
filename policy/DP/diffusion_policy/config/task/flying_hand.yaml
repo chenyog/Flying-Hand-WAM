@@ -1,0 +1,36 @@
+name: flying_hand
+
+image_shape: &image_shape [3, -1, -1]
+shape_meta: &shape_meta
+  obs:
+    head_cam:
+      shape: *image_shape
+      type: rgb
+    wrist_cam:
+      shape: *image_shape
+      type: rgb
+    agent_pos:
+      shape: [5]
+      type: low_dim
+  action:
+    shape: [5]
+
+env_runner:
+  _target_: diffusion_policy.env_runner.dp_runner.DPRunner
+  n_obs_steps: ${n_obs_steps}
+  n_action_steps: ${n_action_steps}
+
+dataset:
+  _target_: diffusion_policy.dataset.robot_image_dataset.RobotImageDataset
+  zarr_path: data/flying_hand.zarr
+  image_keys: [head_camera, wrist_camera]
+  image_obs_keys: [head_cam, wrist_cam]
+  state_key: state
+  action_key: action
+  batch_size: ${dataloader.batch_size}
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: 42
+  val_ratio: 0.02
+  max_train_episodes: null

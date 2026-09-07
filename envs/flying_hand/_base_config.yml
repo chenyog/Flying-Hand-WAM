@@ -5,13 +5,22 @@ goal_grasp_planner:
   yaw_tolerance: 0.1
   reach_timeout_seconds: 3.0
 
-# Evaluation consumes each model waypoint at 20 Hz, but follows it through a
-# causal velocity/acceleration limiter because raw predictions can contain
-# non-flyable jumps. Controller reference velocity and acceleration stay zero.
+# Evaluation consumes each model waypoint at 20 Hz and expands it to the
+# configured simulator-rate reference before selecting direct or dynamics
+# execution.
 waypoint_tracking:
   max_velocity: 0.6
   max_acceleration: 0.8
   max_yaw_rate: 0.5
+
+# Runtime trajectory sampling. The learned policy emits 20 Hz waypoints and
+# both evaluation modes expand them to references at the 200 Hz scene rate.
+# `direct` replays this interpolated reference kinematically; `dynamics`
+# sends the same reference through FlyingHandDynamics.
+trajectory_execution:
+  waypoint_hz: 20.0
+  sample_hz: 200.0
+  direct_record_hz: 200.0
 
 # Task waypoints stay fixed. MINCO optimizes every positive segment duration.
 minco_optimization:
@@ -109,6 +118,9 @@ dynamics:
     - [0.06010407640085654, 0.06010407640085654]
     - [-0.06010407640085654, -0.06010407640085654]
   limits:
+    rotor_thrusts_enabled: true
+    tilt_angle_enabled: true
+    bodyrates_enabled: true
     rotor_thrusts_min: [0.2374948, 0.2374948, 0.2374948, 0.2374948]
     rotor_thrusts_max: [2.374948, 2.374948, 2.374948, 2.374948]
     tilt_angle_max: 0.9

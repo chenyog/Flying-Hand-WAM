@@ -5,9 +5,16 @@ import os
 import argparse
 import random
 import yaml
+from pathlib import Path
 
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
+project_root = Path(parent_directory).resolve().parents[1]
+
+
+def resolve_data_root(save_path: str) -> Path:
+    path = Path(save_path)
+    return path if path.is_absolute() else project_root / path
 
 
 def extract_placeholders(instruction: str) -> List[str]:
@@ -128,9 +135,15 @@ def replace_placeholders_unseen(instruction: str, episode_params: Dict[str, str]
     return instruction
 
 
-def load_task_instructions(task_name: str) -> Dict[str, Any]:
+def load_task_instructions(
+    task_name: str,
+    instruction_namespace: str = None,
+) -> Dict[str, Any]:
     """Load the task instructions from the JSON file."""
-    file_path = os.path.join(parent_directory, f"../task_instruction/{task_name}.json")
+    instruction_root = Path(parent_directory).parent / "task_instruction"
+    if instruction_namespace is not None:
+        instruction_root /= instruction_namespace
+    file_path = instruction_root / f"{task_name}.json"
     with open(file_path, "r") as f:
         task_data = json.load(f)
     return task_data
@@ -138,7 +151,7 @@ def load_task_instructions(task_name: str) -> Dict[str, Any]:
 
 def load_scene_info(task_name: str, setting: str, scene_info_path: str) -> Dict[str, Dict]:
     """Load the scene info from the JSON file in the data directory."""
-    file_path = os.path.join(parent_directory, f"../../{scene_info_path}/{task_name}/{setting}/scene_info.json")
+    file_path = resolve_data_root(scene_info_path) / task_name / setting / "scene_info.json"
     try:
         with open(file_path, "r") as f:
             scene_data = json.load(f)
@@ -154,7 +167,12 @@ def load_scene_info(task_name: str, setting: str, scene_info_path: str) -> Dict[
 def extract_episodes_from_scene_info(scene_info: Dict) -> List[Dict[str, str]]:
     """Extract episode parameters from scene_info."""
     episodes = []
-    for episode_key, episode_data in scene_info.items():
+    episode_keys = sorted(
+        scene_info,
+        key=lambda key: int(key.removeprefix("episode_")),
+    )
+    for episode_key in episode_keys:
+        episode_data = scene_info[episode_key]
         if "info" in episode_data:
             episodes.append(episode_data["info"])
         else:
@@ -162,9 +180,14 @@ def extract_episodes_from_scene_info(scene_info: Dict) -> List[Dict[str, str]]:
     return episodes
 
 
-def save_episode_descriptions(task_name: str, setting: str, generated_descriptions: List[Dict]):
+def save_episode_descriptions(
+    task_name: str,
+    setting: str,
+    generated_descriptions: List[Dict],
+    save_path: str = "data",
+):
     """Save generated descriptions to output files."""
-    output_dir = os.path.join(parent_directory, f"../../data/{task_name}/{setting}/instructions")
+    output_dir = resolve_data_root(save_path) / task_name / setting / "instructions"
     os.makedirs(output_dir, exist_ok=True)
 
     for episode_desc in generated_descriptions:
@@ -181,7 +204,12 @@ def save_episode_descriptions(task_name: str, setting: str, generated_descriptio
                 indent=2,
             )
 
-def generate_episode_descriptions(task_name: str, episodes: List[Dict[str, str]], max_descriptions: int = 1000000):
+def generate_episode_descriptions(
+    task_name: str,
+    episodes: List[Dict[str, str]],
+    max_descriptions: int = 1000000,
+    instruction_namespace: str = None,
+):
     """
     Generate descriptions for episodes by replacing placeholders in instructions with parameter values.
     For each episode, filter instructions that have matching placeholders and generate up to
@@ -189,7 +217,7 @@ def generate_episode_descriptions(task_name: str, episodes: List[Dict[str, str]]
     Now also generates unseen descriptions.
     """
     # Load task instructions
-    task_data = load_task_instructions(task_name)
+    task_data = load_task_instructions(task_name, instruction_namespace)
     seen_instructions = task_data.get("seen", [])
     unseen_instructions = task_data.get("unseen", [])
 
@@ -256,6 +284,14 @@ if __name__ == "__main__":
         default=100,
         help="Maximum number of descriptions per episode",
     )
+    parser.add_argument(
+        "--instruction-namespace",
+        help="Optional task_instruction subdirectory, for example flying_hand",
+    )
+    parser.add_argument(
+        "--save-path",
+        help="Override the task config save_path root",
+    )
 
     args = parser.parse_args()
     setting_file = os.path.join(
@@ -265,12 +301,23 @@ if __name__ == "__main__":
         args_dict = yaml.load(f.read(), Loader=yaml.FullLoader)
 
     # Load scene info and extract episode parameters
-    scene_info = load_scene_info(args.task_name, args.setting, args_dict['save_path'])
+    save_path = args.save_path or args_dict["save_path"]
+    scene_info = load_scene_info(args.task_name, args.setting, save_path)
     episodes = extract_episodes_from_scene_info(scene_info)
 
     # Generate descriptions
-    results = generate_episode_descriptions(args.task_name, episodes, args.max_num)
+    results = generate_episode_descriptions(
+        args.task_name,
+        episodes,
+        args.max_num,
+        instruction_namespace=args.instruction_namespace,
+    )
 
     # Save results to output files
-    save_episode_descriptions(args.task_name, args.setting, results)
+    save_episode_descriptions(
+        args.task_name,
+        args.setting,
+        results,
+        save_path=save_path,
+    )
     print("Successfully Saved Instructions")

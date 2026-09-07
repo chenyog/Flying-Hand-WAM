@@ -18,6 +18,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
+import sapien
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_RESULTS_ROOT = Path(__file__).resolve().parent / "results"
@@ -130,6 +131,31 @@ def _linear_speed(actor):
         if get_velocity is not None:
             speeds.append(float(np.linalg.norm(get_velocity())))
     return max(speeds, default=0.0)
+
+
+def _actor_physx_components(actor):
+    """Return rigid components for either an entity or an articulation wrapper."""
+    body = actor.actor
+    if hasattr(body, "get_components"):
+        candidates = body.get_components()
+    elif hasattr(body, "components"):
+        candidates = body.components
+    elif hasattr(body, "get_links"):
+        candidates = body.get_links()
+    else:
+        candidates = ()
+    return [
+        component
+        for component in candidates
+        if isinstance(
+            component,
+            (
+                sapien.physx.PhysxRigidDynamicComponent,
+                sapien.physx.PhysxRigidStaticComponent,
+                sapien.physx.PhysxArticulationLinkComponent,
+            ),
+        )
+    ]
 
 
 class GraspMonitor:
@@ -659,6 +685,7 @@ def run_once(
         "source_rod": {"samples": 0, "disabled_samples": 0},
         "target_rod": {"samples": 0, "disabled_samples": 0},
     }
+    non_carried_actor_physics = {}
 
     def sample_rod_physics():
         if task is None:
@@ -679,9 +706,30 @@ def run_once(
                 any(not bool(component.is_enabled) for component in components)
             )
 
+    def sample_non_carried_actor_physics():
+        if task is None:
+            return
+        carry_state = getattr(task, "_isolated_carried_actor_state", None)
+        carried_actor = None if carry_state is None else carry_state["actor"]
+        for actor in task.task_actors:
+            if actor is carried_actor:
+                continue
+            components = _actor_physx_components(actor)
+            if not components:
+                continue
+            counts = non_carried_actor_physics.setdefault(
+                actor.get_name(),
+                {"samples": 0, "disabled_samples": 0},
+            )
+            counts["samples"] += 1
+            counts["disabled_samples"] += int(
+                any(not bool(component.is_enabled) for component in components)
+            )
+
     def monitored_step(env, n, save_freq=-1, step_callback=None):
         for _ in range(n):
             sample_rod_physics()
+            sample_non_carried_actor_physics()
             monitor.before_step(env)
             carrying = bool(getattr(env, "_flying_hand_carrying", False))
             link_monitor.before_step(env, carrying=carrying)
@@ -716,15 +764,39 @@ def run_once(
         monitor.finish(task)
         link_monitor.finish(task)
         result["task_success"] = bool(task.check_success())
+        result["final_actor_states"] = {
+            actor.get_name(): {
+                "position": np.asarray(actor.get_pose().p, dtype=float).tolist(),
+                "bounds": np.asarray(
+                    task._get_actor_world_bounds(actor),
+                    dtype=float,
+                ).tolist(),
+                "linear_speed_mps": _linear_speed(actor),
+            }
+            for actor in task.task_actors
+        }
+        if task_name == "place_can_basket":
+            can_position = np.asarray(task.can.get_pose().p, dtype=float)
+            basket_position = np.asarray(task.basket.get_pose().p, dtype=float)
+            result["can_basket_terminal"] = {
+                "contact": bool(task.check_actors_contact(
+                    task.can_name,
+                    task.basket_name,
+                )),
+                "center_xy_distance_m": float(np.linalg.norm(
+                    can_position[:2] - basket_position[:2]
+                )),
+                "can_center_z_m": float(can_position[2]),
+                "basket_center_z_m": float(basket_position[2]),
+                "basket_bounds_z_m": np.asarray(
+                    task._get_actor_world_bounds(task.basket),
+                    dtype=float,
+                )[:, 2].tolist(),
+            }
         result["task_failed_flag"] = bool(task.task_failed)
         result["grasp_validation"] = _json_value(
             task.flying_hand_grasp_diagnostics
         )
-        result["rod_physics"] = {
-            name: counts
-            for name, counts in rod_physics.items()
-            if counts["samples"] > 0
-        }
         result["events"] = []
         all_unstable = []
         all_review = []
@@ -741,6 +813,25 @@ def run_once(
             result["events"].append(event)
             all_unstable.extend(unstable)
             all_review.extend(review)
+        disabled_non_carried = sorted(
+            name
+            for name, counts in non_carried_actor_physics.items()
+            if counts["disabled_samples"] > 0
+        )
+        if disabled_non_carried:
+            all_unstable.append(
+                "non_carried_actor_physx_disabled:"
+                + ",".join(disabled_non_carried)
+            )
+        disabled_rods = sorted(
+            name
+            for name, counts in rod_physics.items()
+            if counts["disabled_samples"] > 0
+        )
+        if disabled_rods:
+            all_unstable.append(
+                "rod_physx_disabled:" + ",".join(disabled_rods)
+            )
         if not result["events"]:
             all_review.append("no_grasp_closure_event_observed")
         if not result["task_success"]:
@@ -764,6 +855,15 @@ def run_once(
         )
     finally:
         planner.step = original_step
+        # Preserve the PhysX audit even when task execution exits early (for
+        # example, because a planner phase raises). Otherwise an unrelated
+        # error could hide an isolation violation observed before that error.
+        result["rod_physics"] = {
+            name: counts
+            for name, counts in rod_physics.items()
+            if counts["samples"] > 0
+        }
+        result["non_carried_actor_physics"] = non_carried_actor_physics
         if task is not None:
             if video_recorder is not None:
                 try:

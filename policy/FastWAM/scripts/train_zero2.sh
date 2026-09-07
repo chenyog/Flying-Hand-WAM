@@ -16,6 +16,7 @@ NUM_MACHINES="${NNODES:-1}"
 MACHINE_RANK="${NODE_RANK:-0}"
 MAIN_PROCESS_IP="${MASTER_ADDR:-127.0.0.1}"
 MAIN_PROCESS_PORT="${MASTER_PORT:-29500}"
+CHECKPOINT_KEEP_LAST=1
 
 is_integer() {
   [[ "${1}" =~ ^[0-9]+$ ]]
@@ -112,7 +113,7 @@ PY
   fi
 fi
 
-echo "[launch] nproc_per_node=${NPROC_PER_NODE} num_machines=${NUM_MACHINES} machine_rank=${MACHINE_RANK} run_id=${RUN_ID}"
+echo "[launch] nproc_per_node=${NPROC_PER_NODE} num_machines=${NUM_MACHINES} machine_rank=${MACHINE_RANK} run_id=${RUN_ID} checkpoint_keep_last=${CHECKPOINT_KEEP_LAST}"
 
 accelerate launch \
   --config_file scripts/accelerate_configs/accelerate_zero2_ds.yaml \
@@ -120,4 +121,5 @@ accelerate launch \
   scripts/train.py \
   "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
   "wandb.name=${TASK_BASENAME}" \
+  "checkpoint_keep_last=${CHECKPOINT_KEEP_LAST}" \
   "${EXTRA_ARGS[@]}"

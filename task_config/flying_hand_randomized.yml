@@ -8,6 +8,18 @@ save_freq: 10
 enable_dynamics: true
 embodiment: [flying-hand]
 language_num: 100
+trajectory_execution:
+  waypoint_hz: 20.0
+  sample_hz: 200.0
+  direct_record_hz: 200.0
+flying_hand_dynamics:
+  limits:
+    # Set any of these to false for an unconstrained controller ablation.
+    rotor_thrusts_enabled: true
+    tilt_angle_enabled: true
+    bodyrates_enabled: true
+  estimator:
+    enabled: true
 domain_randomization:
   random_background: true
   cluttered_board: true

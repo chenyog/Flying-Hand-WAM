@@ -116,7 +116,14 @@ class ACT:
         # Temporal aggregation settings
         self.temporal_agg = args_override.get("temporal_agg", False)
         self.num_queries = args_override["chunk_size"]
-        self.state_dim = RoboTwin_Config.action_dim  # Standard joint dimension for bimanual robot
+        self.state_dim = int(getattr(RoboTwin_Config, "action_dim", args_override.get("action_dim", 14)))
+        self.camera_names = list(
+            getattr(
+                RoboTwin_Config,
+                "camera_names",
+                args_override.get("camera_names", ["cam_high", "cam_right_wrist", "cam_left_wrist"]),
+            )
+        )
         self.max_timesteps = 3000  # Large enough for deployment
 
         # Set query frequency based on temporal_agg - matching imitate_episodes.py logic
@@ -182,9 +189,17 @@ class ACT:
         # Prepare images following imitate_episodes.py pattern
         # Stack images from all cameras
         curr_images = []
-        camera_names = ["head_cam", "left_cam", "right_cam"]
-        for cam_name in camera_names:
-            curr_images.append(obs[cam_name])
+        camera_key = {
+            "cam_high": "head_cam",
+            "cam_wrist": "wrist_cam",
+            "cam_left_wrist": "left_cam",
+            "cam_right_wrist": "right_cam",
+        }
+        for cam_name in self.camera_names:
+            key = camera_key.get(cam_name, cam_name)
+            if key not in obs:
+                raise KeyError(f"Missing camera `{key}` required by ACT: {self.camera_names}")
+            curr_images.append(obs[key])
         curr_image = np.stack(curr_images, axis=0)
         curr_image = torch.from_numpy(curr_image).float().to(self.device).unsqueeze(0)
 

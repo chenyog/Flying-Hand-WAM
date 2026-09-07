@@ -87,12 +87,9 @@ class DPRunner:
         obs_dict = dict_apply(np_obs_dict, lambda x: torch.from_numpy(x).to(device=device))
         # run policy
         with torch.no_grad():
-            obs_dict_input = {}  # flush unused keys
-            obs_dict_input["head_cam"] = obs_dict["head_cam"].unsqueeze(0)
-            # obs_dict_input['front_cam'] = obs_dict['front_cam'].unsqueeze(0)
-            obs_dict_input["left_cam"] = obs_dict["left_cam"].unsqueeze(0)
-            obs_dict_input["right_cam"] = obs_dict["right_cam"].unsqueeze(0)
-            obs_dict_input["agent_pos"] = obs_dict["agent_pos"].unsqueeze(0)
+            obs_dict_input = {
+                key: value.unsqueeze(0) for key, value in obs_dict.items()
+            }
 
             action_dict = policy.predict_action(obs_dict_input)
 

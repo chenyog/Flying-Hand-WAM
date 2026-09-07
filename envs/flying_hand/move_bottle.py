@@ -9,9 +9,13 @@ from . import planner
 class move_bottle(FlyingHandBaseTask):
     pre_grasp_x_offset = -0.55
     grasp_x_offset = -0.09
+    pull_clearance_x_offset = -0.25
     pull_out_x_offset = -0.45
     grasp_z_offset = -0.01
+    pull_clearance_z_offset = 0.035
     pull_out_z_offset = 0.12
+    grasp_to_pull_clearance_seconds = 0.90
+    pull_clearance_to_pull_out_seconds = 1.05
     success_pull_out_x = 0.10
     success_lift_z = 0.03
 
@@ -30,21 +34,45 @@ class move_bottle(FlyingHandBaseTask):
         save_freq = self.start_flying_hand_record()
         motion = planner.TaskMotionPlanner(self, save_freq)
         pre = self._get_flying_hand_pose(self.bottle, self.pre_grasp_x_offset)
-        grasp = self._get_flying_hand_pose(self.bottle, self.grasp_x_offset, self.grasp_z_offset)
-        pull = self._get_flying_hand_pose(self.bottle, self.pull_out_x_offset, self.pull_out_z_offset)
+        grasp = self._get_flying_hand_pose(
+            self.bottle,
+            self.grasp_x_offset,
+            self.grasp_z_offset,
+        )
+        pull_clearance = self._get_flying_hand_pose(
+            self.bottle,
+            self.pull_clearance_x_offset,
+            self.pull_clearance_z_offset,
+        )
+        pull = self._get_flying_hand_pose(
+            self.bottle,
+            self.pull_out_x_offset,
+            self.pull_out_z_offset,
+        )
 
         motion.move(
             [self.flying_hand_initial_pose, pre, grasp],
-            time_hints=[self.initial_to_pre_grasp_seconds, self.pre_grasp_to_grasp_seconds],
+            time_hints=[
+                self.initial_to_pre_grasp_seconds,
+                self.pre_grasp_to_grasp_seconds,
+            ],
             phase_name="bottle_approach_grasp",
             gripper_after_reach="close",
         )
+        pull_time_hints = [
+            self.grasp_to_pull_clearance_seconds,
+            self.pull_clearance_to_pull_out_seconds,
+        ]
         motion.move(
-            [grasp, pull],
-            time_hints=[self.grasp_to_pull_out_seconds],
+            [grasp, pull_clearance, pull],
+            time_hints=pull_time_hints,
             phase_name="bottle_pull_out",
             carried_actor=self.bottle,
-            carried_pose=self.flying_hand.get_root_pose().inv() * self.bottle.get_pose(),
+            carried_pose=(
+                self.flying_hand.get_root_pose().inv() * self.bottle.get_pose()
+            ),
+            # These values seed C++ MINCO but remain optimization variables.
+            initial_time_hints=pull_time_hints,
         )
         self.finish_flying_hand_record(save_freq)
         self.info["info"] = {"{A}": f"001_bottle/base{self.bottle_model_id}"}
@@ -52,4 +80,8 @@ class move_bottle(FlyingHandBaseTask):
 
     def check_success(self):
         pose = self.bottle.get_pose().p
-        return self._task_objects_safe() and pose[0] < self.bottle_initial_x - self.success_pull_out_x and pose[2] > self.bottle_initial_z + self.success_lift_z
+        return (
+            self._task_objects_safe()
+            and pose[0] < self.bottle_initial_x - self.success_pull_out_x
+            and pose[2] > self.bottle_initial_z + self.success_lift_z
+        )

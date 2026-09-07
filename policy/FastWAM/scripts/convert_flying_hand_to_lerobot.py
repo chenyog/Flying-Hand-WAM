@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
@@ -37,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert Flying-Hand HDF5 episodes to LeRobot format.")
     parser.add_argument("--task-id", default=None, help="Task id, e.g. move_bottle.")
     parser.add_argument("--all-tasks", action="store_true", help="Convert all task directories under data/flying_hand.")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel task conversion workers for --all-tasks (1 disables multiprocessing).",
+    )
     parser.add_argument("--setting", default="flying_hand_clean", help="Dataset setting directory.")
     parser.add_argument("--instruction-type", choices=["seen", "unseen"], default="seen")
     parser.add_argument("--robotwin-root", type=Path, default=default_robotwin_root())
@@ -513,6 +520,8 @@ def main() -> None:
     args = parse_args()
     if args.all_tasks == (args.task_id is not None):
         raise ValueError("Pass exactly one of --task-id or --all-tasks.")
+    if args.workers <= 0:
+        raise ValueError(f"`--workers` must be positive, got {args.workers}")
 
     setting_path = args.robotwin_root / "task_config" / f"{args.setting}.yml"
     with setting_path.open("r", encoding="utf-8") as f:
@@ -533,8 +542,18 @@ def main() -> None:
     else:
         task_ids = [args.task_id]
 
-    for task_id in task_ids:
-        convert_task(task_id, args)
+    if args.all_tasks and args.workers > 1:
+        # Each task has an independent output directory. Keep stats generation in
+        # the parent process so only one process writes dataset_stats.json.
+        with ProcessPoolExecutor(max_workers=args.workers) as executor:
+            futures = {executor.submit(convert_task, task_id, args): task_id for task_id in task_ids}
+            for future in as_completed(futures):
+                task_id = futures[future]
+                future.result()
+                print(f"Finished task conversion: {task_id}")
+    else:
+        for task_id in task_ids:
+            convert_task(task_id, args)
 
     write_fastwam_dataset_stats(task_ids, args)
 

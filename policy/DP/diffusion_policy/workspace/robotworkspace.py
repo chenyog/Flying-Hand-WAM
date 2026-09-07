@@ -14,9 +14,12 @@ from omegaconf import OmegaConf
 import pathlib
 from torch.utils.data import DataLoader
 import copy
+import contextlib
 
 import tqdm, random
 import numpy as np
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 from diffusion_policy.policy.diffusion_unet_image_policy import DiffusionUnetImagePolicy
 from diffusion_policy.dataset.base_dataset import BaseImageDataset
@@ -54,6 +57,28 @@ class RobotWorkspace(BaseWorkspace):
         # configure training state
         self.global_step = 0
         self.epoch = 0
+
+    @property
+    def distributed(self):
+        return dist.is_available() and dist.is_initialized()
+
+    @property
+    def is_main_process(self):
+        return not self.distributed or dist.get_rank() == 0
+
+    def _model_module(self):
+        return self.model.module if isinstance(self.model, DDP) else self.model
+
+    def save_checkpoint(self, path=None, *args, **kwargs):
+        if isinstance(self.model, DDP):
+            wrapped_model = self.model
+            self.model = wrapped_model.module
+            try:
+                kwargs.setdefault("use_thread", False)
+                return super().save_checkpoint(path=path, *args, **kwargs)
+            finally:
+                self.model = wrapped_model
+        return super().save_checkpoint(path=path, *args, **kwargs)
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -130,6 +155,19 @@ class RobotWorkspace(BaseWorkspace):
             self.ema_model.to(device)
         optimizer_to(self.optimizer, device)
 
+        if self.distributed:
+            if device.type != "cuda" or device.index is None:
+                raise ValueError("DDP training requires training.device=cuda:<local_rank>")
+            self.model = DDP(
+                self.model,
+                device_ids=[device.index],
+                output_device=device.index,
+                # ConditionalUnet1D contains optional local-conditioning
+                # layers; this policy uses global conditioning, so those
+                # parameters legitimately have no gradient.
+                find_unused_parameters=True,
+            )
+
         # save batch for sampling
         train_sampling_batch = None
 
@@ -145,13 +183,16 @@ class RobotWorkspace(BaseWorkspace):
         # training loop
         log_path = os.path.join(self.output_dir, "logs.json.txt")
 
-        with JsonLogger(log_path) as json_logger:
+        # A shared output directory is used by all ranks.  Only rank zero may
+        # append to the JSON log; concurrent appenders would corrupt JSONL.
+        logger_context = JsonLogger(log_path) if self.is_main_process else contextlib.nullcontext(NullJsonLogger())
+        with logger_context as json_logger:
             for local_epoch_idx in range(cfg.training.num_epochs):
                 step_log = dict()
                 # ========= train for this epoch ==========
                 if cfg.training.freeze_encoder:
-                    self.model.obs_encoder.eval()
-                    self.model.obs_encoder.requires_grad_(False)
+                    self._model_module().obs_encoder.eval()
+                    self._model_module().obs_encoder.requires_grad_(False)
 
                 train_losses = list()
                 with tqdm.tqdm(
@@ -165,7 +206,11 @@ class RobotWorkspace(BaseWorkspace):
                         if train_sampling_batch is None:
                             train_sampling_batch = batch
                         # compute loss
-                        raw_loss = self.model.compute_loss(batch)
+                        raw_loss = (
+                            self.model(batch)
+                            if self.distributed
+                            else self._model_module().compute_loss(batch)
+                        )
                         loss = raw_loss / cfg.training.gradient_accumulate_every
                         loss.backward()
 
@@ -177,7 +222,7 @@ class RobotWorkspace(BaseWorkspace):
 
                         # update ema
                         if cfg.training.use_ema:
-                            ema.step(self.model)
+                            ema.step(self._model_module())
 
                         # logging
                         raw_loss_cpu = raw_loss.item()
@@ -202,11 +247,19 @@ class RobotWorkspace(BaseWorkspace):
 
                 # at the end of each epoch
                 # replace train_loss with epoch average
-                train_loss = np.mean(train_losses)
+                train_loss_tensor = torch.tensor(
+                    np.mean(train_losses) if train_losses else float("nan"),
+                    device=device,
+                    dtype=torch.float32,
+                )
+                if self.distributed:
+                    dist.all_reduce(train_loss_tensor, op=dist.ReduceOp.SUM)
+                    train_loss_tensor /= dist.get_world_size()
+                train_loss = train_loss_tensor.item()
                 step_log["train_loss"] = train_loss
 
                 # ========= eval for this epoch ==========
-                policy = self.model
+                policy = self._model_module()
                 if cfg.training.use_ema:
                     policy = self.ema_model
                 policy.eval()
@@ -229,13 +282,21 @@ class RobotWorkspace(BaseWorkspace):
                         ) as tepoch:
                             for batch_idx, batch in enumerate(tepoch):
                                 batch = dataset.postprocess(batch, device)
-                                loss = self.model.compute_loss(batch)
+                                loss = (
+                                    self.model(batch)
+                                    if self.distributed
+                                    else self._model_module().compute_loss(batch)
+                                )
                                 val_losses.append(loss)
                                 if (cfg.training.max_val_steps
                                         is not None) and batch_idx >= (cfg.training.max_val_steps - 1):
                                     break
                         if len(val_losses) > 0:
-                            val_loss = torch.mean(torch.tensor(val_losses)).item()
+                            val_loss_tensor = torch.stack(val_losses).mean()
+                            if self.distributed:
+                                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+                                val_loss_tensor /= dist.get_world_size()
+                            val_loss = val_loss_tensor.item()
                             # log epoch average validation loss
                             step_log["val_loss"] = val_loss
 
@@ -259,10 +320,13 @@ class RobotWorkspace(BaseWorkspace):
                         del mse
 
                 # checkpoint
-                if ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
+                if self.is_main_process and ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
                     # checkpointing
                     save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
                     self.save_checkpoint(f"checkpoints/{save_name}-{seed}/{self.epoch + 1}.ckpt")  # TODO
+
+                if self.distributed:
+                    dist.barrier(device_ids=[device.index])
 
                 # ========= eval end for this epoch ==========
                 policy.train()
@@ -307,6 +371,48 @@ class BatchSampler:
         return self.num_batch
 
 
+class DistributedBatchSampler:
+    """Shard complete batches across DDP ranks.
+
+    ``RobotImageDataset`` accepts a numpy array as one index and constructs the
+    whole batch in its preallocated buffers.  Sharding individual samples with
+    ``DistributedSampler`` would therefore break the dataset contract and
+    cause duplicate work.  This wrapper first creates the same global batch
+    order on every rank, drops the incomplete tail, then gives each rank every
+    ``world_size``-th complete batch.
+    """
+
+    def __init__(self, batch_sampler):
+        if not dist.is_available() or not dist.is_initialized():
+            raise RuntimeError("DistributedBatchSampler requires an initialized process group")
+        self.batch_sampler = batch_sampler
+        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+        self.num_batch = len(batch_sampler) // self.world_size
+
+    def __iter__(self):
+        batches = list(iter(self.batch_sampler))
+        usable = self.num_batch * self.world_size
+        for batch in batches[self.rank:usable:self.world_size]:
+            yield batch
+
+    def __len__(self):
+        return self.num_batch
+
+
+class NullJsonLogger:
+    """Drop-in logger used by non-main DDP ranks."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def log(self, data):
+        pass
+
+
 def create_dataloader(
     dataset,
     *,
@@ -318,6 +424,8 @@ def create_dataloader(
     seed: int = 0,
 ):
     batch_sampler = BatchSampler(len(dataset), batch_size, shuffle=shuffle, seed=seed, drop_last=True)
+    if dist.is_available() and dist.is_initialized():
+        batch_sampler = DistributedBatchSampler(batch_sampler)
 
     def collate(x):
         assert len(x) == 1
@@ -328,8 +436,11 @@ def create_dataloader(
         collate_fn=collate,
         sampler=batch_sampler,
         num_workers=num_workers,
-        pin_memory=False,
-        persistent_workers=persistent_workers,
+        pin_memory=pin_memory,
+        # PyTorch rejects persistent_workers when num_workers == 0.  More
+        # importantly, zero workers keeps the disk-backed dataset and its
+        # reusable batch buffers inside the rank process only.
+        persistent_workers=bool(persistent_workers and num_workers > 0),
     )
     return dataloader
 

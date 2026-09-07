@@ -3,7 +3,14 @@
 defaults:
   - train
   - override /task: flying_hand_2cam512_1e-4
+  - override hydra/job_logging: disabled
   - _self_
+
+# Camera dimensions are inherited through
+# task/flying_hand_2cam512_1e-4 -> data/flying_hand.yaml. Evaluation therefore
+# uses head 480x360 and wrist 640x480 as raw inputs, resizes each to 256x192,
+# and feeds their horizontal 512x192 composition to the model. Keep the
+# dimensions in the data config as the single source of truth.
 
 ckpt: null
 gpu_id: 0
@@ -24,7 +31,7 @@ EVALUATION:
   # Save a dense simulation-time video for the first episode of every task.
   eval_video_episode_limit: 1
   eval_video_max_seconds: 30.0
-  output_dir: ./evaluate_results/flying_hand/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
+  output_dir: /data/Flying-Hand-WAM/eval_results/fastwam/flying_hand/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
   action_horizon: null
   # Preserve the trained 20 Hz, 24-action execution window. Each waypoint is
   # tracked at its original 0.05 s interval without MINCO time optimization.

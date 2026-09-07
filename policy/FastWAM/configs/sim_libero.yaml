@@ -17,7 +17,7 @@ EVALUATION:
   task_suite_name: libero_spatial
   task_id: 0
   num_trials: 50
-  output_dir: ./evaluate_results/libero/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
+  output_dir: /data/Flying-Hand-WAM/eval_results/fastwam/libero/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
 
   # Runtime behavior
   env_num: 1

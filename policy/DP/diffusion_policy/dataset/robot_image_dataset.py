@@ -1,5 +1,8 @@
 from typing import Dict
-import numba
+try:
+    import numba
+except ImportError:  # Keep dataset loading usable in minimal inference environments.
+    numba = None
 import torch
 import numpy as np
 import copy
@@ -28,14 +31,24 @@ class RobotImageDataset(BaseImageDataset):
         val_ratio=0.0,
         batch_size=128,
         max_train_episodes=None,
+        image_keys=None,
+        image_obs_keys=None,
+        state_key="state",
+        action_key="action",
     ):
 
         super().__init__()
-        self.replay_buffer = ReplayBuffer.copy_from_path(
-            zarr_path,
-            # keys=['head_camera', 'front_camera', 'left_camera', 'right_camera', 'state', 'action'],
-            keys=["head_camera", "state", "action"],
-        )
+        self.image_keys = list(image_keys or ["head_camera"])
+        self.image_obs_keys = list(image_obs_keys or ["head_cam"])
+        if len(self.image_keys) != len(self.image_obs_keys):
+            raise ValueError("image_keys and image_obs_keys must have the same length")
+        self.state_key = state_key
+        self.action_key = action_key
+        # Keep the large image arrays on disk.  ``copy_from_path`` expands the
+        # complete Zarr into RAM, which is unsafe when every DDP rank loads its
+        # own copy.  SequenceSampler and batch_sample_sequence already support
+        # Zarr-backed arrays and only read the requested sequences.
+        self.replay_buffer = ReplayBuffer.create_from_path(zarr_path, mode="r")
 
         val_mask = get_val_mask(n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed)
         train_mask = ~val_mask
@@ -77,37 +90,27 @@ class RobotImageDataset(BaseImageDataset):
 
     def get_normalizer(self, mode="limits", **kwargs):
         data = {
-            "action": self.replay_buffer["action"],
-            "agent_pos": self.replay_buffer["state"],
+            "action": self.replay_buffer[self.action_key],
+            "agent_pos": self.replay_buffer[self.state_key],
         }
         normalizer = LinearNormalizer()
         normalizer.fit(data=data, last_n_dims=1, mode=mode, **kwargs)
-        normalizer["head_cam"] = get_image_range_normalizer()
-        normalizer["front_cam"] = get_image_range_normalizer()
-        normalizer["left_cam"] = get_image_range_normalizer()
-        normalizer["right_cam"] = get_image_range_normalizer()
+        for key in self.image_obs_keys:
+            normalizer[key] = get_image_range_normalizer()
         return normalizer
 
     def __len__(self) -> int:
         return len(self.sampler)
 
     def _sample_to_data(self, sample):
-        agent_pos = sample["state"].astype(np.float32)  # (agent_posx2, block_posex3)
-        head_cam = np.moveaxis(sample["head_camera"], -1, 1) / 255
-        # front_cam = np.moveaxis(sample['front_camera'],-1,1)/255
-        # left_cam = np.moveaxis(sample['left_camera'],-1,1)/255
-        # right_cam = np.moveaxis(sample['right_camera'],-1,1)/255
-
-        data = {
-            "obs": {
-                "head_cam": head_cam,  # T, 3, H, W
-                # 'front_cam': front_cam, # T, 3, H, W
-                # 'left_cam': left_cam, # T, 3, H, W
-                # 'right_cam': right_cam, # T, 3, H, W
-                "agent_pos": agent_pos,  # T, D
-            },
-            "action": sample["action"].astype(np.float32),  # T, D
-        }
+        data = {"obs": {"agent_pos": sample[self.state_key].astype(np.float32)}}
+        for image_key, obs_key in zip(self.image_keys, self.image_obs_keys):
+            image = sample[image_key]
+            # DP Zarr data is normally NCHW; accept legacy NHWC stores too.
+            if image.ndim == 4 and image.shape[-1] == 3:
+                image = np.moveaxis(image, -1, 1)
+            data["obs"][obs_key] = image / 255
+        data["action"] = sample[self.action_key].astype(np.float32)
         return data
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
@@ -132,22 +135,10 @@ class RobotImageDataset(BaseImageDataset):
             raise ValueError(idx)
 
     def postprocess(self, samples, device):
-        agent_pos = samples["state"].to(device, non_blocking=True)
-        head_cam = samples["head_camera"].to(device, non_blocking=True) / 255.0
-        # front_cam = samples['front_camera'].to(device, non_blocking=True) / 255.0
-        # left_cam = samples['left_camera'].to(device, non_blocking=True) / 255.0
-        # right_cam = samples['right_camera'].to(device, non_blocking=True) / 255.0
-        action = samples["action"].to(device, non_blocking=True)
-        return {
-            "obs": {
-                "head_cam": head_cam,  # B, T, 3, H, W
-                # 'front_cam': front_cam, # B, T, 3, H, W
-                # 'left_cam': left_cam, # B, T, 3, H, W
-                # 'right_cam': right_cam, # B, T, 3, H, W
-                "agent_pos": agent_pos,  # B, T, D
-            },
-            "action": action,  # B, T, D
-        }
+        obs = {"agent_pos": samples[self.state_key].to(device, non_blocking=True)}
+        for image_key, obs_key in zip(self.image_keys, self.image_obs_keys):
+            obs[obs_key] = samples[image_key].to(device, non_blocking=True) / 255.0
+        return {"obs": obs, "action": samples[self.action_key].to(device, non_blocking=True)}
 
 
 def _batch_sample_sequence(
@@ -157,7 +148,8 @@ def _batch_sample_sequence(
     idx: np.ndarray,
     sequence_length: int,
 ):
-    for i in numba.prange(len(idx)):
+    iterator = numba.prange(len(idx)) if numba is not None else range(len(idx))
+    for i in iterator:
         buffer_start_idx, buffer_end_idx, sample_start_idx, sample_end_idx = indices[idx[i]]
         data[i, sample_start_idx:sample_end_idx] = input_arr[buffer_start_idx:buffer_end_idx]
         if sample_start_idx > 0:
@@ -166,8 +158,12 @@ def _batch_sample_sequence(
             data[i, sample_end_idx:] = data[i, sample_end_idx - 1]
 
 
-_batch_sample_sequence_sequential = numba.jit(_batch_sample_sequence, nopython=True, parallel=False)
-_batch_sample_sequence_parallel = numba.jit(_batch_sample_sequence, nopython=True, parallel=True)
+if numba is not None:
+    _batch_sample_sequence_sequential = numba.jit(_batch_sample_sequence, nopython=True, parallel=False)
+    _batch_sample_sequence_parallel = numba.jit(_batch_sample_sequence, nopython=True, parallel=True)
+else:
+    _batch_sample_sequence_sequential = _batch_sample_sequence
+    _batch_sample_sequence_parallel = _batch_sample_sequence
 
 
 def batch_sample_sequence(

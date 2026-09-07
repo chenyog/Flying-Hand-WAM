@@ -1,6 +1,6 @@
 {
-  "full_description": "Use the flying hand to grab the ring that is already threaded onto one black rod and thread it onto another black rod.",
-  "schema": "{A} refers to the ring. {B} refers to the target black rod.",
+  "full_description": "Use the flying hand to grab the ring that is already threaded onto one rod and thread it onto another rod.",
+  "schema": "{A} refers to the ring. {B} refers to the target rod.",
   "preference": "num of words should not exceed 15.",
   "seen": [
     "Pick up {A} and set it onto {B}",

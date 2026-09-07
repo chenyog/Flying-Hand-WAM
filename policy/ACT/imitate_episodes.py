@@ -7,6 +7,8 @@ import torch
 import numpy as np
 import pickle
 import argparse
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 
 import matplotlib
 
@@ -25,14 +27,49 @@ from utils import compute_dict_mean, set_seed, detach_dict  # helper functions
 from act_policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
-from sim_env import BOX_POSE
+try:
+    from sim_env import BOX_POSE
+except ModuleNotFoundError as exc:
+    if exc.name != "dm_control":
+        raise
+    # Training on Flying-Hand HDF5 does not require the optional MuJoCo stack.
+    # Evaluation of sim-* tasks still imports sim_env in eval_bc and will report
+    # the missing dependency there.
+    BOX_POSE = {}
 
 import IPython
 
 e = IPython.embed
 
 
+def setup_distributed():
+    """Initialize torchrun state, while keeping ordinary single-GPU use unchanged."""
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    distributed = world_size > 1
+    if distributed and not dist.is_initialized():
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend, init_method="env://")
+    rank = dist.get_rank() if distributed else 0
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank if distributed else 0)
+        device = torch.device("cuda", local_rank if distributed else 0)
+    else:
+        device = torch.device("cpu")
+    return distributed, rank, world_size, device
+
+
+def cleanup_distributed():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
 def main(args):
+    distributed, rank, world_size, device = setup_distributed()
+    args["distributed"] = distributed
+    args["rank"] = rank
+    args["world_size"] = world_size
+    args["device"] = device
     set_seed(1)
     # command line parameters
     is_eval = args["eval"]
@@ -42,6 +79,7 @@ def main(args):
     task_name = args["task_name"]
     batch_size_train = args["batch_size"]
     batch_size_val = args["batch_size"]
+    num_workers = args["num_workers"]
     num_epochs = args["num_epochs"]
 
     # get task parameters
@@ -58,9 +96,10 @@ def main(args):
     num_episodes = task_config["num_episodes"]
     episode_len = task_config["episode_len"]
     camera_names = task_config["camera_names"]
+    is_flying_hand = task_config.get("robot_type") == "flying_hand"
 
     # fixed parameters
-    state_dim = 14  # yiheng
+    state_dim = int(task_config.get("action_dim", 5 if is_flying_hand else 14))
     lr_backbone = 1e-5
     backbone = "resnet18"
     if policy_class == "ACT":
@@ -79,6 +118,7 @@ def main(args):
             "dec_layers": dec_layers,
             "nheads": nheads,
             "camera_names": camera_names,
+            "state_dim": state_dim,
         }
     elif policy_class == "CNNMLP":
         policy_config = {
@@ -87,6 +127,7 @@ def main(args):
             "backbone": backbone,
             "num_queries": 1,
             "camera_names": camera_names,
+            "state_dim": state_dim,
         }
     else:
         raise NotImplementedError
@@ -105,10 +146,16 @@ def main(args):
         "temporal_agg": args["temporal_agg"],
         "camera_names": camera_names,
         "real_robot": not is_sim,
-        "save_freq": args['save_freq']
+        "save_freq": args['save_freq'],
+        "distributed": distributed,
+        "rank": rank,
+        "world_size": world_size,
+        "device": device,
     }
 
     if is_eval:
+        if distributed:
+            raise ValueError("--eval is not supported with torchrun; evaluate the rank-0 checkpoint separately")
         ckpt_names = [f"policy_best.ckpt"]
         results = []
         for ckpt_name in ckpt_names:
@@ -120,22 +167,31 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train,
-                                                           batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(
+        dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
+        distributed=distributed, rank=rank, world_size=world_size,
+        num_workers=num_workers, action_horizon=policy_config["num_queries"])
 
     # save dataset stats
-    if not os.path.isdir(ckpt_dir):
+    if rank == 0 and not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
-    with open(stats_path, "wb") as f:
-        pickle.dump(stats, f)
+    if rank == 0:
+        with open(stats_path, "wb") as f:
+            pickle.dump(stats, f)
+    if distributed:
+        dist.barrier()
     best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+    if rank != 0:
+        cleanup_distributed()
+        return
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
     ckpt_path = os.path.join(ckpt_dir, f"policy_best.ckpt")
     torch.save(best_state_dict, ckpt_path)
     print(f"Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}")
+    cleanup_distributed()
 
 
 def make_policy(policy_class, policy_config):
@@ -344,13 +400,16 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
 
 def forward_pass(data, policy):
+    device = next(policy.parameters()).device
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = (
-        image_data.cuda(),
-        qpos_data.cuda(),
-        action_data.cuda(),
-        is_pad.cuda(),
+        image_data.to(device, non_blocking=True),
+        qpos_data.to(device, non_blocking=True),
+        action_data.to(device, non_blocking=True),
+        is_pad.to(device, non_blocking=True),
     )
+    if image_data.dtype == torch.uint8:
+        image_data = image_data.float().div_(255.0)
     return policy(qpos_data, image_data, action_data, is_pad)  # TODO remove None
 
 
@@ -360,20 +419,33 @@ def train_bc(train_dataloader, val_dataloader, config):
     seed = config["seed"]
     policy_class = config["policy_class"]
     policy_config = config["policy_config"]
+    distributed = config.get("distributed", False)
+    rank = config.get("rank", 0)
+    world_size = config.get("world_size", 1)
+    device = config.get("device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
     set_seed(seed)
 
     policy = make_policy(policy_class, policy_config)
-    policy.cuda()
+    policy.to(device)
     optimizer = make_optimizer(policy_class, policy)
+    if distributed:
+        policy = DistributedDataParallel(
+            policy,
+            device_ids=[device.index] if device.type == "cuda" else None,
+            find_unused_parameters=True,
+        )
 
     train_history = []
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
 
-    for epoch in tqdm(range(num_epochs)):
-        print(f"\nEpoch {epoch}")
+    for epoch in tqdm(range(num_epochs), disable=rank != 0):
+        if rank == 0:
+            print(f"\nEpoch {epoch}")
+        if hasattr(train_dataloader.sampler, "set_epoch"):
+            train_dataloader.sampler.set_epoch(epoch)
         # validation
         with torch.inference_mode():
             policy.eval()
@@ -382,16 +454,20 @@ def train_bc(train_dataloader, val_dataloader, config):
                 forward_dict = forward_pass(data, policy)
                 epoch_dicts.append(forward_dict)
             epoch_summary = compute_dict_mean(epoch_dicts)
+            if distributed:
+                for value in epoch_summary.values():
+                    dist.all_reduce(value, op=dist.ReduceOp.SUM)
+                    value /= world_size
             validation_history.append(epoch_summary)
 
             epoch_val_loss = epoch_summary["loss"]
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f"Val loss:   {epoch_val_loss:.5f}")
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
+                if rank == 0:
+                    state_source = policy.module if distributed else policy
+                    best_ckpt_info = (epoch, min_val_loss, deepcopy(state_source.state_dict()))
+        if rank == 0:
+            print(f"Val loss:   {epoch_val_loss:.5f}")
 
         # training
         policy.train()
@@ -404,20 +480,26 @@ def train_bc(train_dataloader, val_dataloader, config):
             optimizer.step()
             optimizer.zero_grad()
             train_history.append(detach_dict(forward_dict))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx + 1) * epoch:(batch_idx + 1) * (epoch + 1)])
+        epoch_summary = compute_dict_mean(train_history[-len(train_dataloader):])
+        if distributed:
+            for value in epoch_summary.values():
+                dist.all_reduce(value, op=dist.ReduceOp.SUM)
+                value /= world_size
         epoch_train_loss = epoch_summary["loss"]
-        print(f"Train loss: {epoch_train_loss:.5f}")
-        summary_string = ""
-        for k, v in epoch_summary.items():
-            summary_string += f"{k}: {v.item():.3f} "
+        if rank == 0:
+            print(f"Train loss: {epoch_train_loss:.5f}")
 
-        if (epoch + 1) % config['save_freq'] == 0:
+        if rank == 0 and (epoch + 1) % config['save_freq'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
-            torch.save(policy.state_dict(), ckpt_path)
+            state_source = policy.module if distributed else policy
+            torch.save(state_source.state_dict(), ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
 
+    if rank != 0:
+        return None
     ckpt_path = os.path.join(ckpt_dir, f"policy_last.ckpt")
-    torch.save(policy.state_dict(), ckpt_path)
+    state_source = policy.module if distributed else policy
+    torch.save(state_source.state_dict(), ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{best_epoch}_seed_{seed}.ckpt")
@@ -469,6 +551,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--task_name", action="store", type=str, help="task_name", required=True)
     parser.add_argument("--batch_size", action="store", type=int, help="batch_size", required=True)
+    parser.add_argument("--num_workers", action="store", type=int, default=1,
+                        help="DataLoader workers per train/validation loader and rank")
     parser.add_argument("--seed", action="store", type=int, help="seed", required=True)
     parser.add_argument("--num_epochs", action="store", type=int, help="num_epochs", required=True)
     parser.add_argument("--lr", action="store", type=float, help="lr", required=True)
@@ -488,4 +572,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--temporal_agg", action="store_true")
 
-    main(vars(parser.parse_args()))
+    try:
+        main(vars(parser.parse_args()))
+    finally:
+        cleanup_distributed()
