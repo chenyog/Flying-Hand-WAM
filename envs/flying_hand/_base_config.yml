@@ -13,15 +13,6 @@ waypoint_tracking:
   max_acceleration: 0.8
   max_yaw_rate: 0.5
 
-# Runtime trajectory sampling. The learned policy emits 20 Hz waypoints and
-# both evaluation modes expand them to references at the 200 Hz scene rate.
-# `direct` replays this interpolated reference kinematically; `dynamics`
-# sends the same reference through FlyingHandDynamics.
-trajectory_execution:
-  waypoint_hz: 20.0
-  sample_hz: 200.0
-  direct_record_hz: 200.0
-
 # Task waypoints stay fixed. MINCO optimizes every positive segment duration.
 minco_optimization:
   enabled: true
@@ -73,6 +64,9 @@ gripper:
     # decision boundary so noisy predictions do not chatter.
     close_threshold: 0.50
     open_threshold: 0.40
+    # Fraction of the candidate actor box that must overlap the complete
+    # Flying-Hand grasp region. This covers all sampled expert actor poses.
+    min_object_overlap_ratio: 0.30
     center_bounds_min: [0.04, -0.08, -0.12]
     center_bounds_max: [0.16, 0.08, 0.06]
   drive:

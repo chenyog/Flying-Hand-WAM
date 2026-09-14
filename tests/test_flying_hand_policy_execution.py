@@ -5,15 +5,11 @@ from unittest import mock
 import numpy as np
 import sapien
 
-from policy.DP.deploy_policy import (
-    _execute_flying_hand_action,
-    _finite_difference_flying_hand_actions,
-    _reset_flying_hand_reference,
-)
 from envs.flying_hand.eval_control import (
     canonical_action_chunk,
     execute_action_chunk,
     finite_difference_actions,
+    reset_reference,
 )
 
 
@@ -79,7 +75,7 @@ class FlyingHandPolicyExecutionTest(unittest.TestCase):
 
     def test_bounded_reference_derivatives_are_passed_to_dynamics(self):
         with mock.patch("envs.flying_hand.planner.step"):
-            _execute_flying_hand_action(
+            execute_action_chunk(
                 self.env,
                 self.model,
                 np.array([0.1, 0.0, 0.0, 0.0, 0.0]),
@@ -112,7 +108,7 @@ class FlyingHandPolicyExecutionTest(unittest.TestCase):
             ]
         )
 
-        velocities, accelerations = _finite_difference_flying_hand_actions(
+        velocities, accelerations = finite_difference_actions(
             self.env, actions
         )
 
@@ -128,7 +124,7 @@ class FlyingHandPolicyExecutionTest(unittest.TestCase):
         self.model._flying_hand_reference_acceleration = np.ones(3)
         self.model._flying_hand_reference_orientation = np.ones(4)
 
-        _reset_flying_hand_reference(self.model)
+        reset_reference(self.model)
 
         self.assertIsNone(self.model._flying_hand_reference_position)
         np.testing.assert_array_equal(
@@ -187,6 +183,74 @@ class FlyingHandPolicyExecutionTest(unittest.TestCase):
         self.assertLessEqual(
             max(np.linalg.norm(reference[2]) for reference in references), 0.8 + 1e-6
         )
+
+    def test_shared_executor_does_not_apply_task_level_replan_limit(self):
+        self.env.enable_dynamics = False
+        self.env.replan_steps = 2
+        self.env.take_action_cnt = 0
+        self.env.eval_success = False
+        self.env.check_success = lambda: False
+        actions = np.asarray(
+            [[0.01 * index, 0.0, 0.0, 0.0, 0.0] for index in range(1, 5)],
+            dtype=np.float32,
+        )
+        with mock.patch("envs.flying_hand.planner.step"):
+            consumed = execute_action_chunk(self.env, self.model, actions)
+        self.assertEqual(consumed, 4)
+        self.assertEqual(self.env.take_action_cnt, 4)
+
+    def test_deferred_history_records_executed_window_only(self):
+        self.env.enable_dynamics = False
+        self.env.replan_steps = 2
+        self.env.take_action_cnt = 0
+        self.env.eval_success = False
+        self.env.check_success = lambda: False
+        self.env.record_flying_hand_eval_history = True
+        self.env.flying_hand_eval_action_chunks = []
+        self.env.flying_hand_eval_actual_states = []
+        self.env.flying_hand_eval_target_states = []
+        self.env._get_flying_hand_actual_state = lambda: np.zeros(5, dtype=np.float32)
+        self.env._get_flying_hand_target_state = lambda: np.zeros(5, dtype=np.float32)
+        actions = np.zeros((4, 5), dtype=np.float32)
+        with mock.patch("envs.flying_hand.planner.step"):
+            execute_action_chunk(self.env, self.model, actions)
+        self.assertEqual([len(chunk) for chunk in self.env.flying_hand_eval_action_chunks], [4])
+        self.assertEqual(len(self.env.flying_hand_eval_actual_states), 4)
+        self.assertEqual(len(self.env.flying_hand_eval_target_states), 4)
+
+    def test_episode_boundary_only_shortens_final_policy_chunk(self):
+        self.env.enable_dynamics = False
+        self.env.replan_steps = 1
+        self.env.step_lim = 5
+        self.env.take_action_cnt = 3
+        self.env.eval_success = False
+        self.env.check_success = lambda: False
+        actions = np.zeros((4, 5), dtype=np.float32)
+        with mock.patch("envs.flying_hand.planner.step"):
+            consumed = execute_action_chunk(self.env, self.model, actions)
+        self.assertEqual(consumed, 2)
+        self.assertEqual(self.env.take_action_cnt, 5)
+
+    def test_grasp_edge_is_applied_after_reaching_target_waypoint(self):
+        self.env.enable_dynamics = False
+        self.env.take_action_cnt = 0
+        self.env.eval_success = False
+        self.env.check_success = lambda: False
+        edge_positions = []
+
+        def apply_grasp(task_env, grasp, *, action_step):
+            edge_positions.append(np.asarray(task_env.flying_hand.get_root_pose().p).copy())
+            self.model.grasp_commanded = grasp
+
+        self.model._apply_flying_hand_grasp_command = apply_grasp
+        with mock.patch("envs.flying_hand.planner.step"):
+            execute_action_chunk(
+                self.env,
+                self.model,
+                np.asarray([[0.01, 0.0, 0.0, 0.0, 1.0]], dtype=np.float32),
+            )
+        self.assertEqual(len(edge_positions), 1)
+        self.assertAlmostEqual(float(edge_positions[0][0]), 0.01, places=6)
 
 
 if __name__ == "__main__":

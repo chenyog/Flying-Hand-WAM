@@ -14,6 +14,7 @@ import traceback
 import os
 import fcntl
 import h5py
+import cv2
 import subprocess
 import time
 from argparse import ArgumentParser
@@ -274,6 +275,21 @@ def run(TASK_ENV, args):
                 if not os.path.exists(video_path):
                     return False
                 if os.path.getsize(video_path) == 0:
+                    return False
+                capture = cv2.VideoCapture(video_path)
+                try:
+                    if not capture.isOpened():
+                        return False
+                    video_fps = float(capture.get(cv2.CAP_PROP_FPS))
+                    video_frames = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+                finally:
+                    capture.release()
+                expected_fps = 1.0 / (
+                    float(args["timestep"]) * float(args["save_freq"])
+                )
+                if abs(video_fps - expected_fps) > max(1e-3, expected_fps * 1e-3):
+                    return False
+                if video_frames != frame_counts[0]:
                     return False
             return True
 

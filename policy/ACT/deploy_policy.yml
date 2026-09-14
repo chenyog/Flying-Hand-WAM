@@ -4,12 +4,14 @@ policy_name: ACT
 task_config: null
 ckpt_setting: null
 seed: 0
-instruction_type: unseen
+instruction_type: seen
 
 # ACT-specific arguments
 action_dim: 14
 kl_weight: 10.0
-chunk_size: 50 
+# For Flying-Hand this value is replaced by query_embed.weight from the
+# checkpoint. 32 is the current train_flying_hand.sh architecture.
+chunk_size: 32
 hidden_dim: 512
 dim_feedforward: 3200
 temporal_agg: false 

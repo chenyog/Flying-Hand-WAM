@@ -41,10 +41,16 @@ class Wan22Trainer:
         max_steps = cfg.max_steps
         self.max_steps = int(max_steps) if max_steps is not None else None
         self.log_every = int(cfg.log_every)
+        # Model weights and exact-resume state intentionally have independent
+        # schedules. Weight checkpoints are long-lived evaluation artifacts;
+        # resume state contains optimizer/DeepSpeed shards and only the newest
+        # successfully written snapshot is retained.
         self.save_every = int(cfg.save_every)
-        self.checkpoint_keep_last = int(cfg.get("checkpoint_keep_last", 1))
-        if self.checkpoint_keep_last <= 0:
-            raise ValueError("`checkpoint_keep_last` must be a positive integer.")
+        self.state_save_every = int(cfg.state_save_every)
+        if self.save_every < 0:
+            raise ValueError("`save_every` must be greater than or equal to zero.")
+        if self.state_save_every < 0:
+            raise ValueError("`state_save_every` must be greater than or equal to zero.")
         self.eval_every = int(cfg.eval_every)
         self.eval_num_inference_steps = int(cfg.eval_num_inference_steps)
         self.gradient_accumulation_steps = int(cfg.gradient_accumulation_steps)
@@ -585,90 +591,78 @@ class Wan22Trainer:
             json.dump(payload, f, ensure_ascii=True, indent=2)
 
     @staticmethod
-    def _checkpoint_step(path: Path, *, is_weights: bool):
-        pattern = r"step_(\d+)\.pt" if is_weights else r"step_(\d+)"
-        match = re.fullmatch(pattern, path.name)
+    def _state_step(path: Path):
+        match = re.fullmatch(r"step_(\d+)", path.name)
         return int(match.group(1)) if match is not None else None
 
-    def _prune_old_checkpoints(self, current_step: int):
-        weights_root = Path(self.weights_dir)
+    def _prune_old_resume_states(self, current_step: int):
         state_root = Path(self.state_dir)
-        weights_by_step = {
-            step: path
-            for path in weights_root.iterdir()
-            if path.is_file()
-            and (step := self._checkpoint_step(path, is_weights=True)) is not None
-        }
         states_by_step = {
             step: path
             for path in state_root.iterdir()
             if path.is_dir()
-            and (step := self._checkpoint_step(path, is_weights=False)) is not None
+            and (step := self._state_step(path)) is not None
         }
 
-        complete_steps = sorted(set(weights_by_step) & set(states_by_step))
-        if not complete_steps:
+        if current_step not in states_by_step:
             raise RuntimeError(
-                "Checkpoint pruning requires at least one complete weights/state pair."
+                "The resume state saved at the current step is missing: "
+                f"step={current_step}."
             )
-        if current_step not in complete_steps:
-            raise RuntimeError(
-                "The checkpoint saved at the current step is not a complete "
-                f"weights/state pair: step={current_step}."
-            )
-        older_steps = [step for step in complete_steps if step != current_step]
-        keep_steps = {current_step}
-        keep_steps.update(
-            older_steps[-max(self.checkpoint_keep_last - 1, 0) :]
-            if self.checkpoint_keep_last > 1
-            else []
-        )
-
-        removed_weights = []
-        for step, path in sorted(weights_by_step.items()):
-            if step not in keep_steps:
-                path.unlink()
-                removed_weights.append(str(path))
 
         removed_states = []
         for step, path in sorted(states_by_step.items()):
-            if step not in keep_steps:
+            if step != current_step:
                 shutil.rmtree(path)
                 removed_states.append(str(path))
 
         return {
-            "kept_steps": sorted(keep_steps),
-            "removed_weights": removed_weights,
+            "kept_step": current_step,
             "removed_states": removed_states,
         }
 
-    def save_checkpoint(self):
+    def save_training_artifacts(self, *, save_weights: bool, save_state: bool):
+        if not save_weights and not save_state:
+            raise ValueError("At least one of `save_weights` or `save_state` must be true.")
+
         step_tag = f"step_{self.global_step:06d}"
 
         self.accelerator.wait_for_everyone()
         ckpt_path = None
-        if self.accelerator.is_main_process:
+        if save_weights and self.accelerator.is_main_process:
             ckpt_path = self._save_weights_checkpoint(step_tag=step_tag)
         self.accelerator.wait_for_everyone()
 
-        state_path = os.path.join(self.state_dir, step_tag)
-        ensure_dir(state_path)
-        self.accelerator.save_state(output_dir=state_path)
-        if self.accelerator.is_main_process:
-            self._save_trainer_state(state_path)
-        self.accelerator.wait_for_everyone()
+        state_path = None
+        if save_state:
+            state_path = os.path.join(self.state_dir, step_tag)
+            # A failed distributed write must not look like a resumable step.
+            # Publish the directory name only after all ranks and metadata finish.
+            staging_path = f"{state_path}.incomplete"
+            if self.accelerator.is_main_process:
+                if os.path.isdir(staging_path):
+                    shutil.rmtree(staging_path)
+                ensure_dir(staging_path)
+            self.accelerator.wait_for_everyone()
 
-        if self.accelerator.is_main_process:
-            retention = self._prune_old_checkpoints(current_step=self.global_step)
-            logger.info(
-                "[ckpt] retention keep_last=%d kept_steps=%s "
-                "removed_weights=%d removed_states=%d",
-                self.checkpoint_keep_last,
-                retention["kept_steps"],
-                len(retention["removed_weights"]),
-                len(retention["removed_states"]),
-            )
-        self.accelerator.wait_for_everyone()
+            self.accelerator.save_state(output_dir=staging_path)
+            if self.accelerator.is_main_process:
+                self._save_trainer_state(staging_path)
+            self.accelerator.wait_for_everyone()
+
+            if self.accelerator.is_main_process:
+                if os.path.isdir(state_path):
+                    shutil.rmtree(state_path)
+                os.replace(staging_path, state_path)
+                # Only complete step_* directories participate in retention;
+                # persistent model-weight checkpoints are never pruned here.
+                retention = self._prune_old_resume_states(current_step=self.global_step)
+                logger.info(
+                    "[state] retention kept_step=%d removed_states=%d",
+                    retention["kept_step"],
+                    len(retention["removed_states"]),
+                )
+            self.accelerator.wait_for_everyone()
 
         return {"weights_path": ckpt_path, "state_path": state_path}
 
@@ -833,18 +827,33 @@ class Wan22Trainer:
                                 eval_payload["eval/action_l1"] = float(metrics["action_l1"])
                             self._wandb_log(eval_payload)
 
-                    if self.save_every > 0 and self.global_step % self.save_every == 0:
-                        ckpt_info = self.save_checkpoint()
+                    save_weights = (
+                        self.save_every > 0
+                        and self.global_step % self.save_every == 0
+                    )
+                    save_state = (
+                        self.state_save_every > 0
+                        and self.global_step % self.state_save_every == 0
+                    )
+                    is_final_step = self.global_step >= self.max_steps
+
+                    # Always leave one final model checkpoint and one exact-resume
+                    # state even when max_steps is not a multiple of either
+                    # configured interval.
+                    if save_weights or save_state or is_final_step:
+                        ckpt_info = self.save_training_artifacts(
+                            save_weights=save_weights or is_final_step,
+                            save_state=save_state or is_final_step,
+                        )
                         if self.accelerator.is_main_process:
                             logger.info(
-                                "[ckpt] step=%d weights=%s state=%s",
+                                "[save] step=%d weights=%s state=%s",
                                 self.global_step,
                                 ckpt_info["weights_path"],
                                 ckpt_info["state_path"],
                             )
 
-                    if self.global_step >= self.max_steps:
-                        ckpt_info = self.save_checkpoint()
+                    if is_final_step:
                         if self.accelerator.is_main_process:
                             logger.info(
                                 "[done] max_steps reached step=%d weights=%s state=%s",
@@ -854,7 +863,7 @@ class Wan22Trainer:
                             )
                         return
 
-        ckpt_info = self.save_checkpoint()
+        ckpt_info = self.save_training_artifacts(save_weights=True, save_state=True)
         if self.accelerator.is_main_process:
             logger.info(
                 "[done] training finished step=%d weights=%s state=%s",

@@ -5,6 +5,8 @@ will compute the mean and standard deviation of the data in the dataset and save
 to the config assets directory.
 """
 
+import dataclasses
+
 import numpy as np
 import tqdm
 import tyro
@@ -23,8 +25,8 @@ class RemoveStrings(transforms.DataTransformFn):
 
 def create_dataset(config: _config.TrainConfig, ) -> tuple[_config.DataConfig, _data_loader.Dataset]:
     data_config = config.data.create(config.assets_dirs, config.model)
-    if data_config.repo_id is None:
-        raise ValueError("Data config must have a repo_id")
+    if data_config.repo_id is None and not data_config.dataset_dirs:
+        raise ValueError("Data config must have a repo_id or dataset_dirs")
     dataset = _data_loader.create_dataset(data_config, config.model)
     dataset = _data_loader.TransformedDataset(
         dataset,
@@ -38,10 +40,24 @@ def create_dataset(config: _config.TrainConfig, ) -> tuple[_config.DataConfig, _
     return data_config, dataset
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(
+    config_name: str,
+    max_frames: int | None = None,
+    dataset_dirs: tuple[str, ...] = (),
+    num_workers: int = 8,
+):
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
+
     config = _config.get_config(config_name)
+    if dataset_dirs:
+        config = dataclasses.replace(
+            config,
+            data=dataclasses.replace(config.data, dataset_dirs=dataset_dirs),
+        )
     data_config, dataset = create_dataset(config)
 
+    batch_size = 8
     num_frames = len(dataset)
     shuffle = False
 
@@ -49,25 +65,31 @@ def main(config_name: str, max_frames: int | None = None):
         num_frames = max_frames
         shuffle = True
 
+    num_batches = num_frames // batch_size
+    if num_batches == 0:
+        raise ValueError(f"Need at least {batch_size} frames to compute normalization stats")
+
     data_loader = _data_loader.TorchDataLoader(
         dataset,
-        local_batch_size=8,
-        num_workers=8,
+        local_batch_size=batch_size,
+        num_workers=num_workers,
         shuffle=shuffle,
-        num_batches=num_frames,
+        num_batches=num_batches,
     )
 
     keys = ["state", "actions"]
     stats = {key: normalize.RunningStats() for key in keys}
 
-    for batch in tqdm.tqdm(data_loader, total=num_frames, desc="Computing stats"):
+    for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
         for key in keys:
-            values = np.asarray(batch[key][0])
+            values = np.asarray(batch[key])
             stats[key].update(values.reshape(-1, values.shape[-1]))
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
-    output_path = config.assets_dirs / data_config.repo_id
+    if data_config.asset_id is None:
+        raise ValueError("Data config must define asset_id for normalization stats")
+    output_path = config.assets_dirs / data_config.asset_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)
 

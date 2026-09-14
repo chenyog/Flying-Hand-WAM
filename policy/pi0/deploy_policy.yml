@@ -4,10 +4,12 @@ task_name: null
 task_config: null
 ckpt_setting: null
 seed: null
-instruction_type: unseen
+instruction_type: seen
 
 # Add Parameters You Need
 train_config_name: null
 model_name: null
-checkpoint_id: 30000
+checkpoint_id: 50000
+# Used only by the legacy arm executor. Flying-Hand consumes the checkpoint's
+# native action chunk returned by the policy (32 steps for current configs).
 pi0_step: 50

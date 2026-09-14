@@ -6,11 +6,13 @@ usage() {
 Usage:
   train_flying_hand.sh [options]
 
-Train one ACT model on every Flying-Hand task. The converter always uses all
-available episodes and assigns one global episode index across the merged set.
+Train one ACT model on all selected Flying-Hand datasets. The converter uses
+all available episodes and assigns one global episode index across the merged set.
 
 Options:
   --all-tasks          Explicitly select the all-task mode (default behavior)
+  --dataset-dir PATH   Raw dataset dir containing data/episode*.hdf5; repeat for multiple datasets
+  --run-name NAME      Optional run-name prefix; a UTC timestamp is always appended
   --gpus IDS           GPU ids, e.g. 0 or 0,1,2,3 (default: 0)
   --seed N             Training seed (default: 0)
   --epochs N           Number of training epochs (default: 6000)
@@ -23,6 +25,7 @@ Options:
 Examples:
   ./train_flying_hand.sh --gpus 0
   ./train_flying_hand.sh --gpus 0,1,2,3 --epochs 6000 --batch-size 8
+  ./train_flying_hand.sh --dataset-dir /data/set_a --dataset-dir /data/set_b --gpus 0,1
 EOF
 }
 
@@ -33,10 +36,19 @@ BATCH_SIZE="8"
 NUM_WORKERS="1"
 CONVERT_WORKERS="32"
 FORCE_CONVERT=0
+DATASET_DIRS=()
+RUN_NAME_OVERRIDE=""
+ALL_TASKS_EXPLICIT=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --all-tasks) shift ;;
+        --all-tasks) ALL_TASKS_EXPLICIT=1; shift ;;
+        --dataset-dir)
+            [[ $# -ge 2 ]] || { echo "--dataset-dir requires a value" >&2; exit 2; }
+            DATASET_DIRS+=("$2"); shift 2 ;;
+        --run-name)
+            [[ $# -ge 2 ]] || { echo "--run-name requires a value" >&2; exit 2; }
+            RUN_NAME_OVERRIDE="$2"; shift 2 ;;
         --gpus)
             [[ $# -ge 2 ]] || { echo "--gpus requires a value" >&2; exit 2; }
             GPU_IDS="$2"; shift 2 ;;
@@ -74,6 +86,14 @@ if ! [[ "$SEED" =~ ^[0-9]+$ ]] || ! [[ "$EPOCHS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$B
     echo "seed must be non-negative; epochs/batch-size/convert-workers must be positive; num-workers may be zero" >&2
     exit 2
 fi
+if [[ -n "${RUN_NAME_OVERRIDE}" ]] && [[ ! "${RUN_NAME_OVERRIDE}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "--run-name may contain only letters, digits, dot, underscore, and hyphen" >&2
+    exit 2
+fi
+if (( ALL_TASKS_EXPLICIT == 1 && ${#DATASET_DIRS[@]} > 0 )); then
+    echo "--all-tasks and --dataset-dir cannot be combined" >&2
+    exit 2
+fi
 
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${PROJECT_ROOT}/../.." && pwd)
@@ -87,9 +107,36 @@ IFS=',' read -r -a GPU_ARRAY <<< "$GPU_IDS"
 GPU_COUNT=${#GPU_ARRAY[@]}
 cd "$PROJECT_ROOT"
 
-SIM_TASK_NAME="sim-flying_hand-all-tasks"
-PROCESSED_DIR="processed_data/sim-flying_hand/all-tasks"
-CKPT_DIR="./act_ckpt/act-flying_hand/all-tasks"
+if (( ${#DATASET_DIRS[@]} > 0 )); then
+    for dataset_dir in "${DATASET_DIRS[@]}"; do
+        [[ -d "${dataset_dir}" ]] || { echo "Dataset directory does not exist: ${dataset_dir}" >&2; exit 1; }
+    done
+    DATASET_FINGERPRINT="$("${PYTHON_BIN}" - "${DATASET_DIRS[@]}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+resolved = [str(pathlib.Path(item).expanduser().resolve()) for item in sys.argv[1:]]
+print(hashlib.sha256("\n".join(resolved).encode()).hexdigest()[:12])
+PY
+)"
+    SIM_TASK_NAME="sim-flying_hand-multi-${DATASET_FINGERPRINT}"
+    PROCESSED_DIR="processed_data/sim-flying_hand/multi-${DATASET_FINGERPRINT}"
+    CONVERT_ARGS=(--sim-task-name "$SIM_TASK_NAME")
+    for dataset_dir in "${DATASET_DIRS[@]}"; do
+        ABS_DATASET_DIR="$(cd "${dataset_dir}" && pwd)"
+        CONVERT_ARGS+=(--dataset-dir "$ABS_DATASET_DIR")
+    done
+    RUN_PREFIX="flying_hand_multi_${#DATASET_DIRS[@]}"
+else
+    SIM_TASK_NAME="sim-flying_hand-all-tasks"
+    PROCESSED_DIR="processed_data/sim-flying_hand/all-tasks"
+    CONVERT_ARGS=(--all-tasks)
+    RUN_PREFIX="flying_hand_all_tasks"
+fi
+RUN_PREFIX="${RUN_NAME_OVERRIDE:-${RUN_PREFIX}}"
+RUN_ID="${RUN_PREFIX}_$(date -u +%Y%m%dT%H%M%S_%6NZ)"
+CKPT_DIR="./act_ckpt/act-flying_hand/${RUN_ID}"
 
 has_task_config() {
     "$PYTHON_BIN" - "$1" <<'PY'
@@ -107,7 +154,7 @@ PY
 
 if (( FORCE_CONVERT == 1 )) || [[ ! -f "${PROCESSED_DIR}/conversion_complete.json" ]] || ! has_task_config "$SIM_TASK_NAME"; then
         "$PYTHON_BIN" process_data.py \
-            --all-tasks \
+            "${CONVERT_ARGS[@]}" \
             --output "$PROCESSED_DIR" \
             --workers "$CONVERT_WORKERS"
 fi
@@ -128,6 +175,8 @@ TRAIN_ARGS=(
     --state_dim 5
     --seed "$SEED"
 )
+
+echo "[launch] run_id=${RUN_ID} checkpoint_dir=${PROJECT_ROOT}/${CKPT_DIR#./} datasets=${#DATASET_DIRS[@]}"
 
 if (( GPU_COUNT > 1 )); then
     "$TORCHRUN_BIN" --standalone --nproc_per_node="$GPU_COUNT" imitate_episodes.py "${TRAIN_ARGS[@]}"

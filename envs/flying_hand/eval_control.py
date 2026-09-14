@@ -63,11 +63,7 @@ def _limit_vector_norm(value: np.ndarray, maximum: float) -> np.ndarray:
 
 
 def _waypoint_dt(task_env: Any) -> float:
-    """Return the configured 20 Hz waypoint period."""
-    config = getattr(task_env, "flying_hand_trajectory_execution", {})
-    waypoint_hz = float(config.get("waypoint_hz", 0.0))
-    if waypoint_hz > 0.0:
-        return 1.0 / waypoint_hz
+    """Return the policy/data period derived from the recording cadence."""
     return max(
         float(getattr(task_env, "save_freq", 1))
         * float(getattr(task_env, "sim_timestep", 1.0)),
@@ -141,6 +137,14 @@ def reset_reference(model: Any) -> None:
     model._flying_hand_reference_orientation = None
 
 
+def reset_execution_state(model: Any) -> None:
+    """Reset every episode-local state owned by the shared executor."""
+    reset_reference(model)
+    model.grasp_commanded = False
+    model.attached_actor = None
+    model.attached_pose = None
+
+
 def _ensure_reference(task_env: Any, model: Any) -> tuple[str, str, str, str]:
     names = (
         "_flying_hand_reference_position",
@@ -207,7 +211,7 @@ def _apply_grasp_edge(task_env: Any, model: Any, grasp: bool, action_step: int) 
 
 
 def _build_linear_reference_samples(task_env: Any, poses: list[Any]):
-    """Sample adjacent 20 Hz waypoints linearly at the simulator rate.
+    """Sample adjacent policy waypoints linearly at the simulator rate.
 
     The model waypoint cadence is independent from the simulator timestep.
     The position is continuous, velocity is constant within a segment, and
@@ -336,8 +340,24 @@ def _step_dynamics_safely(
 
 
 def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
-    """Execute one complete policy chunk and update common eval accounting."""
+    """Execute the policy-selected action chunk and update eval accounting.
+
+    The shared simulator path deliberately does not choose a replan window.
+    Each policy adapter owns that decision according to its trained contract:
+    Pi consumes its checkpoint-native action horizon, DP uses the checkpoint's
+    ``n_action_steps``, FastWAM fills its queue with its policy-specific replan
+    length, and ACT emits one temporally selected action at a time.
+    """
     actions = canonical_action_chunk(actions)
+    # The episode boundary may shorten only the final policy-selected chunk;
+    # it is not a replan setting and prevents action/history overshoot.
+    step_limit = getattr(task_env, "step_lim", None)
+    if step_limit is not None:
+        remaining = max(
+            0,
+            int(step_limit) - int(getattr(task_env, "take_action_cnt", 0)),
+        )
+        actions = actions[:remaining]
     if len(actions) == 0:
         return 0
     if int(getattr(task_env, "take_action_cnt", 0)) == 0:
@@ -346,6 +366,8 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
         task_env.take_action_cnt = 0
     if callable(getattr(model, "_record_action_chunk", None)):
         model._record_action_chunk(task_env, actions)
+    if bool(getattr(task_env, "record_flying_hand_eval_history", False)):
+        task_env.flying_hand_eval_action_chunks.append(actions.copy())
     grasp_config = getattr(task_env, "flying_hand_grasp_validation", {})
     close_threshold = float(grasp_config.get("close_threshold", 0.50))
     open_threshold = float(grasp_config.get("open_threshold", 0.40))
@@ -384,14 +406,6 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
             if grasp_state
             else float(action[4]) >= close_threshold
         )
-        # A grasp edge is associated with the target waypoint, while the
-        # pose itself is followed by the dense trajectory samples below.
-        _apply_grasp_edge(
-            task_env,
-            model,
-            grasp_state,
-            int(getattr(task_env, "take_action_cnt", 0) + index),
-        )
         segment_end = min(
             len(samples),
             sample_index + samples_per_waypoint,
@@ -419,7 +433,13 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
 
                 planner.set_pose(task_env, reference_pose, velocity)
                 applied_pose = reference_pose
-            if getattr(model, "attached_actor", None) is not None:
+            # Only an active, validated grasp may drive an isolated actor.
+            # A stale model attachment must never move an object after release
+            # or after a failed grasp transition.
+            if (
+                getattr(model, "attached_actor", None) is not None
+                and bool(getattr(task_env, "is_grasping", False))
+            ):
                 from envs.flying_hand import planner
 
                 planner.set_isolated_carried_actor_target(
@@ -430,10 +450,31 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
             from envs.flying_hand import planner
 
             planner.step(task_env, 1, save_freq=None)
+            progress_hook = getattr(task_env, "update_flying_hand_policy_progress", None)
+            if callable(progress_hook):
+                progress_hook()
             sample_hook = getattr(model, "_record_flight_sample", None)
             if callable(sample_hook):
                 sample_hook(task_env)
         sample_index = segment_end
+        # The command belongs to this target waypoint.  Applying the edge
+        # after reaching it matches collection, where the hand first reaches
+        # the grasp/release pose and only then changes the gripper command.
+        _apply_grasp_edge(
+            task_env,
+            model,
+            grasp_state,
+            int(getattr(task_env, "take_action_cnt", 0) + index),
+        )
+        if bool(getattr(task_env, "capture_flying_hand_eval_waypoints", False)):
+            task_env.get_obs()
+        if bool(getattr(task_env, "record_flying_hand_eval_history", False)):
+            task_env.flying_hand_eval_actual_states.append(
+                np.asarray(task_env._get_flying_hand_actual_state(), dtype=np.float32)
+            )
+            task_env.flying_hand_eval_target_states.append(
+                np.asarray(task_env._get_flying_hand_target_state(), dtype=np.float32)
+            )
     task_env.take_action_cnt += int(len(actions))
     check_success = getattr(task_env, "check_success", None)
     if callable(check_success):

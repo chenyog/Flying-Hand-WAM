@@ -8,15 +8,28 @@ if [[ -d "${REPO_VENV_BIN}" ]]; then
   export PATH="${REPO_VENV_BIN}:${PATH}"
 fi
 
-NPROC_PER_NODE="${1:?Usage: bash scripts/train_zero1.sh <nproc_per_node> [hydra_overrides...]}"
+NPROC_PER_NODE="${1:?Usage: bash scripts/train_zero1.sh <nproc_per_node> [--dataset-dir PATH ...] [save_every=N] [state_save_every=N] [hydra_overrides...]}"
 shift
 
-EXTRA_ARGS=("$@")
+EXTRA_ARGS=()
+DATASET_DIRS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dataset-dir)
+      [[ $# -ge 2 ]] || { echo "Error: --dataset-dir requires a value." >&2; exit 2; }
+      DATASET_DIRS+=("$2")
+      shift 2
+      ;;
+    *)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
 NUM_MACHINES="${NNODES:-1}"
 MACHINE_RANK="${NODE_RANK:-0}"
 MAIN_PROCESS_IP="${MASTER_ADDR:-127.0.0.1}"
 MAIN_PROCESS_PORT="${MASTER_PORT:-29500}"
-CHECKPOINT_KEEP_LAST=1
 
 is_integer() {
   [[ "${1}" =~ ^[0-9]+$ ]]
@@ -66,7 +79,7 @@ done
 
 if [[ -z "${RUN_ID:-}" ]]; then
   if (( NUM_MACHINES <= 1 )); then
-    RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)"
+    RUN_ID="$(date -u +%Y%m%dT%H%M%S_%6NZ)"
   else
     RUN_ID_SYNC_TIMEOUT="${RUN_ID_SYNC_TIMEOUT:-180}"
     RUN_ID_SYNC_PORT="${RUN_ID_SYNC_PORT:-$((MAIN_PROCESS_PORT + 11))}"
@@ -102,7 +115,7 @@ store = dist.TCPStore(
 )
 key = f"run_id::{task_basename}"
 if machine_rank == 0:
-    run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     store.set(key, run_id)
 run_id = store.get(key).decode("utf-8")
 print(run_id)
@@ -113,13 +126,30 @@ PY
   fi
 fi
 
-echo "[launch] nproc_per_node=${NPROC_PER_NODE} num_machines=${NUM_MACHINES} machine_rank=${MACHINE_RANK} run_id=${RUN_ID} checkpoint_keep_last=${CHECKPOINT_KEEP_LAST}"
+DATA_OVERRIDES=()
+if (( ${#DATASET_DIRS[@]} > 0 )); then
+  for dataset_dir in "${DATASET_DIRS[@]}"; do
+    [[ -d "${dataset_dir}" ]] || { echo "Error: dataset directory does not exist: ${dataset_dir}" >&2; exit 1; }
+  done
+  DATASET_DIRS_JSON="$(python - "${DATASET_DIRS[@]}" <<'PY'
+import json
+import pathlib
+import sys
+
+print(json.dumps([str(pathlib.Path(path).expanduser().resolve()) for path in sys.argv[1:]]))
+PY
+)"
+  DATA_OVERRIDES+=("data.train.dataset_dirs=${DATASET_DIRS_JSON}")
+  DATA_OVERRIDES+=("data.train.pretrained_norm_stats=null")
+fi
+
+echo "[launch] nproc_per_node=${NPROC_PER_NODE} num_machines=${NUM_MACHINES} machine_rank=${MACHINE_RANK} run_id=${RUN_ID} datasets=${#DATASET_DIRS[@]}"
 
 accelerate launch \
   --config_file scripts/accelerate_configs/accelerate_zero1_ds.yaml \
   --num_processes "${NPROC_PER_NODE}" \
   scripts/train.py \
   "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
-  "wandb.name=${TASK_BASENAME}" \
-  "checkpoint_keep_last=${CHECKPOINT_KEEP_LAST}" \
+  "wandb.name=${TASK_BASENAME}_${RUN_ID}" \
+  "${DATA_OVERRIDES[@]}" \
   "${EXTRA_ARGS[@]}"

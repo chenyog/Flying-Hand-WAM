@@ -1,5 +1,7 @@
-import h5py, cv2
+import h5py
 import numpy as np
+
+from .rgb_codec import decode_hdf5_rgb, require_current_rgb_jpeg_codec
 
 
 def parse_img_array(data):
@@ -24,10 +26,7 @@ def parse_img_array(data):
         else:
             raise TypeError(f"Unsupported buffer type: {type(buf)}")
 
-        # 解码成 BGR 图像
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("cv2.imdecode 返回 None，说明字节流可能不是有效的图片格式")
+        img = decode_hdf5_rgb(arr)
         imgs.append(img)
 
     # 将 list 转成形如 (N, H, W, C) 的 ndarray
@@ -54,5 +53,6 @@ def h5_to_dict(node):
 
 def read_hdf5(file_path):
     with h5py.File(file_path, "r") as f:
+        require_current_rgb_jpeg_codec(f)
         data_dict = h5_to_dict(f)
     return data_dict

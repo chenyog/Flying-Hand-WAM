@@ -4,6 +4,7 @@ task_config=${2}
 expert_data_num=${3}
 seed=${4}
 gpu_id=${5}
+run_timestamp=$(date -u +%Y%m%dT%H%M%S_%6NZ)
 
 DEBUG=False
 save_ckpt=True
@@ -12,7 +13,7 @@ export CUDA_VISIBLE_DEVICES=${gpu_id}
 
 python3 imitate_episodes.py \
     --task_name sim-${task_name}-${task_config}-${expert_data_num} \
-    --ckpt_dir ./act_ckpt/act-${task_name}/${task_config}-${expert_data_num} \
+    --ckpt_dir ./act_ckpt/act-${task_name}/${task_config}-${expert_data_num}-${run_timestamp} \
     --policy_class ACT \
     --kl_weight 10 \
     --chunk_size 50 \

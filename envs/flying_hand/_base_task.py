@@ -142,13 +142,18 @@ class FlyingHandBaseTask(gym.Env):
         self.crazy_random_light_rate = random_setting.get("crazy_random_light_rate", 0)
         self.crazy_random_light = 0 if not self.random_light else np.random.rand() < self.crazy_random_light_rate
         self.random_flying_hand_init_pos = random_setting.get("random_flying_hand_init_pos", [0, 0, 0])
+        self.texture_type = str(
+            kwags.get("texture_type", "unseen" if self.eval_mode else "seen")
+        )
+        if self.texture_type not in {"seen", "unseen"}:
+            raise ValueError(f"texture_type must be `seen` or `unseen`, got {self.texture_type!r}")
         self.board_z_bias = float(table_height_bias)
         self.table_z_bias = self.board_z_bias
         self.clutter_object_count = int(np.random.randint(self.clutter_object_count_range[0], self.clutter_object_count_range[1] + 1))
         self.ground_texture = None
         self.wall_texture = None
         if self.random_background:
-            texture_type = "seen" if not self.eval_mode else "unseen"
+            texture_type = self.texture_type
             with open(Path(__file__).with_name("textures.yml"), "r", encoding="utf-8") as f:
                 texture_config = yaml.safe_load(f)
             if np.random.rand() > self.clean_background_rate:
@@ -163,6 +168,11 @@ class FlyingHandBaseTask(gym.Env):
         self.eval_video_ffmpeg = None
         self.eval_video_frame_limit = None
         self.eval_video_frames_written = 0
+        self.record_flying_hand_eval_history = False
+        self.capture_flying_hand_eval_waypoints = False
+        self.flying_hand_eval_action_chunks = []
+        self.flying_hand_eval_actual_states = []
+        self.flying_hand_eval_target_states = []
 
         self.setup_scene(**kwags)
         self.create_table_and_wall(table_xy_bias=table_xy_bias, table_height=0.74)
@@ -181,6 +191,17 @@ class FlyingHandBaseTask(gym.Env):
                 "ground_texture": self.ground_texture,
                 "wall_texture": self.wall_texture,
             },
+            "render_info": {
+                "shader": self.render_shader,
+                "samples_per_pixel": self.render_samples_per_pixel,
+                "path_depth": self.render_path_depth,
+                "denoiser": self.render_denoiser,
+            },
+            "timing_info": {
+                "timestep": self.sim_timestep,
+                "save_freq": self.save_freq,
+                "record_fps": 1.0 / (self.sim_timestep * self.save_freq),
+            },
             "info": {},
         }
 
@@ -191,10 +212,23 @@ class FlyingHandBaseTask(gym.Env):
         set_global_config(max_num_materials=50000, max_num_textures=50000)
         self.renderer = sapien.SapienRenderer()
         self.engine.set_renderer(self.renderer)
-        sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
-        sapien.render.set_ray_tracing_path_depth(8)
-        sapien.render.set_ray_tracing_denoiser("oidn")
+        # Collection, policy observations, and post-evaluation replay use the
+        # same RT/OIDN image domain.  Raster is deliberately rejected so an
+        # evaluation launcher cannot silently change the model input domain.
+        render_shader = str(kwargs.get("render_shader", "rt")).strip().lower()
+        if render_shader != "rt":
+            raise ValueError(
+                "Flying-Hand requires render_shader=`rt` with OIDN; got "
+                f"{render_shader!r}"
+            )
+        self.render_shader = render_shader
+        self.render_samples_per_pixel = 32
+        self.render_path_depth = 8
+        self.render_denoiser = "oidn"
+        sapien.render.set_camera_shader_dir(render_shader)
+        sapien.render.set_ray_tracing_samples_per_pixel(self.render_samples_per_pixel)
+        sapien.render.set_ray_tracing_path_depth(self.render_path_depth)
+        sapien.render.set_ray_tracing_denoiser(self.render_denoiser)
         self.scene = self.engine.create_scene(sapien.SceneConfig())
         self.sim_timestep = kwargs.get("timestep", 1 / 500)
         self.scene.set_timestep(self.sim_timestep)
@@ -290,10 +324,6 @@ class FlyingHandBaseTask(gym.Env):
         if dynamics_override is not None:
             merge(self.flying_hand_config["dynamics"], dynamics_override)
 
-        trajectory_override = task_args.get("trajectory_execution")
-        if trajectory_override is not None:
-            merge(self.flying_hand_config["trajectory_execution"], trajectory_override)
-
     def _apply_flying_hand_config(self):
         material_config = self.flying_hand_config["materials"]
         self.flying_hand_black_color = material_config["black_color"]
@@ -314,6 +344,11 @@ class FlyingHandBaseTask(gym.Env):
         open_threshold = float(grasp_config["open_threshold"])
         if not 0.0 <= open_threshold < close_threshold <= 1.0:
             raise ValueError("gripper grasp thresholds must satisfy 0 <= open < close <= 1")
+        min_object_overlap_ratio = float(
+            grasp_config.get("min_object_overlap_ratio", 0.0)
+        )
+        if not 0.0 <= min_object_overlap_ratio <= 1.0:
+            raise ValueError("gripper min_object_overlap_ratio must be in [0, 1]")
         grasp_hold_seconds = float(self.flying_hand_config["gripper"]["grasp_hold_seconds"])
         if grasp_hold_seconds <= 0.0:
             raise ValueError("gripper grasp_hold_seconds must be positive")
@@ -323,19 +358,8 @@ class FlyingHandBaseTask(gym.Env):
             **grasp_config,
             "center_bounds_min": center_min,
             "center_bounds_max": center_max,
+            "min_object_overlap_ratio": min_object_overlap_ratio,
         }
-        trajectory_config = self.flying_hand_config["trajectory_execution"]
-        self.flying_hand_trajectory_execution = {
-            "waypoint_hz": float(trajectory_config["waypoint_hz"]),
-            "sample_hz": float(trajectory_config["sample_hz"]),
-            "direct_record_hz": float(trajectory_config["direct_record_hz"]),
-        }
-        if (
-            self.flying_hand_trajectory_execution["waypoint_hz"] <= 0.0
-            or self.flying_hand_trajectory_execution["sample_hz"] <= 0.0
-            or self.flying_hand_trajectory_execution["direct_record_hz"] <= 0.0
-        ):
-            raise ValueError("Flying-Hand trajectory frequencies must be positive")
         waypoint_config = self.flying_hand_config["waypoint_tracking"]
         self.flying_hand_waypoint_tracking = {
             key: float(waypoint_config[key])
@@ -455,7 +479,14 @@ class FlyingHandBaseTask(gym.Env):
         hand_pose=None,
         actor_pose=None,
     ):
-        """Check whether an actor box center is inside the grasp region."""
+        """Check object-box overlap with the complete Flying-Hand grasp box.
+
+        The actor and grasp-region bounds are expressed in the same ``u_center``
+        frame.  Eligibility is based on the fraction of the actor AABB volume
+        contained in the grasp region, rather than only on its center point.
+        ``center_inside`` remains diagnostic information for inspecting old
+        trajectories, but it is not used as the acceptance criterion.
+        """
         root_pose = self.flying_hand.get_root_pose() if hand_pose is None else hand_pose
         u_center_offset = self.flying_hand_config["root"]["u_center_offset"]
         u_center_pose = root_pose * sapien.Pose(u_center_offset)
@@ -474,19 +505,46 @@ class FlyingHandBaseTask(gym.Env):
         config = self.flying_hand_grasp_validation
         center_min = config["center_bounds_min"]
         center_max = config["center_bounds_max"]
+        actor_extent = np.maximum(actor_max - actor_min, 0.0)
+        region_extent = np.maximum(center_max - center_min, 0.0)
+        overlap_extent = np.maximum(
+            np.minimum(actor_max, center_max) - np.maximum(actor_min, center_min),
+            0.0,
+        )
+        actor_volume = float(np.prod(actor_extent))
+        region_volume = float(np.prod(region_extent))
+        overlap_volume = float(np.prod(overlap_extent))
+        object_overlap_ratio = (
+            overlap_volume / actor_volume if actor_volume > 1.0e-12 else 0.0
+        )
+        region_occupancy_ratio = (
+            overlap_volume / region_volume if region_volume > 1.0e-12 else 0.0
+        )
         center_inside = bool(
             np.all(actor_center >= center_min)
             and np.all(actor_center <= center_max)
         )
+        eligible = bool(
+            object_overlap_ratio
+            >= float(config.get("min_object_overlap_ratio", 0.0))
+        )
         return {
             "actor": actor.get_name(),
-            "eligible": center_inside,
+            "eligible": eligible,
             "center_inside": center_inside,
             "actor_center_u": actor_center.tolist(),
             "actor_bounds_min_u": actor_min.tolist(),
             "actor_bounds_max_u": actor_max.tolist(),
             "center_bounds_min_u": center_min.tolist(),
             "center_bounds_max_u": center_max.tolist(),
+            "actor_box_volume_m3": actor_volume,
+            "grasp_region_volume_m3": region_volume,
+            "overlap_volume_m3": overlap_volume,
+            "object_overlap_ratio": float(object_overlap_ratio),
+            "region_occupancy_ratio": float(region_occupancy_ratio),
+            "min_object_overlap_ratio": float(
+                config.get("min_object_overlap_ratio", 0.0)
+            ),
         }
 
     def _set_actor_bbox_center(self, actor, center):
@@ -908,12 +966,6 @@ class FlyingHandBaseTask(gym.Env):
         self.set_flying_hand_gripper(self.flying_hand_config["gripper"]["open_qpos"], is_grasp=False)
         self.reset_flying_hand_trajectory()
         save_freq = self.save_freq if self.save_data else -1
-        # Direct demonstrations are kinematic references.  When explicitly
-        # requested by the task YAML, retain every controller-rate sample so
-        # the saved trajectory follows the optimized MINCO curve at 200 Hz.
-        if save_freq > 0 and not self.enable_dynamics:
-            record_hz = self.flying_hand_trajectory_execution["direct_record_hz"]
-            save_freq = max(1, int(round(1.0 / (self.sim_timestep * record_hz))))
         self.flying_hand_record_save_freq = save_freq
         self._save_flying_hand_frame(save_freq, force=True)
         return save_freq

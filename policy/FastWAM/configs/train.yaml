@@ -19,8 +19,12 @@ learning_rate: 1.0e-4
 num_epochs: 1
 max_steps: null
 log_every: 10
+# Persistent model-weight checkpoint interval. All interval checkpoints are kept.
+# Set to 0 to disable periodic weight checkpoints (the final one is still saved).
 save_every: 100
-checkpoint_keep_last: 1
+# Exact-resume state interval. Only the newest complete state directory is kept.
+# Set to 0 to disable periodic state snapshots (the final one is still saved).
+state_save_every: ${save_every}
 eval_every: 50
 eval_num_inference_steps: 10
 

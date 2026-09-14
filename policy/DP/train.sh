@@ -15,7 +15,8 @@ save_ckpt=True
 alg_name=robot_dp_$action_dim
 config_name=${alg_name}
 addition_info=train
-exp_name=${task_name}-robot_dp-${addition_info}
+run_timestamp=$(date -u +%Y%m%dT%H%M%S_%6NZ)
+exp_name=${task_name}-robot_dp-${addition_info}-${run_timestamp}
 run_dir="data/outputs/${exp_name}_seed${seed}"
 
 echo -e "\033[33mgpu id (to use): ${gpu_id}\033[0m"
@@ -49,6 +50,8 @@ python train.py --config-name=${config_name}.yaml \
                             logging.mode=${wandb_mode} \
                             setting=${task_config} \
                             expert_data_num=${expert_data_num} \
-                            head_camera_type=$head_camera_type
+                            head_camera_type=$head_camera_type \
+                            hydra.run.dir=${run_dir} \
+                            hydra.output_subdir=null
                             # checkpoint.save_ckpt=${save_ckpt}
                             # hydra.run.dir=${run_dir} \

@@ -48,7 +48,10 @@ class EpisodicDataset(torch.utils.data.Dataset):
         episode_id = self.episode_ids[index]
         dataset_path = os.path.join(self.dataset_dir, f"episode_{episode_id}.hdf5")
         root = self._get_h5_file(dataset_path)
-        is_sim = None
+        # Flying-Hand conversion stores qpos[t] -> action[t] explicitly.
+        # Legacy ACT files without this attribute retain the historical
+        # one-frame action offset below.
+        is_sim = bool(root.attrs.get("sim", False))
         original_action_shape = root["/action"].shape
         episode_len = original_action_shape[0]
         if sample_full_episode:

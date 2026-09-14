@@ -2,6 +2,9 @@ import sys
 import os
 import subprocess
 import json
+import hashlib
+import gc
+import random
 
 sys.path.append("./")
 sys.path.append(f"./policy")
@@ -26,12 +29,17 @@ current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
 
 
-def class_decorator(task_name):
+def class_decorator(task_name, task_namespace=None):
+    module_name = (
+        f"{task_namespace}/{task_name}"
+        if task_namespace is not None
+        else task_name
+    )
     try:
-        env_class = load_task_class(task_name)
+        env_class = load_task_class(module_name)
         env_instance = env_class()
-    except:
-        raise SystemExit("No Task")
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+        raise SystemExit(f"No such task: {module_name}") from exc
     return env_instance
 
 
@@ -96,10 +104,130 @@ def get_eval_video_fps(args):
     return int(round(fps)) if abs(fps - round(fps)) < 1e-6 else fps
 
 
+def save_flying_hand_eval_history(
+    task_env,
+    *,
+    task_name,
+    task_config,
+    episode,
+    seed,
+    instruction,
+    success,
+    video_sizes,
+    fps,
+):
+    """Save lightweight 20 Hz replay data without encoding RGB during eval."""
+    chunks = list(task_env.flying_hand_eval_action_chunks)
+    actions = (
+        np.concatenate(chunks, axis=0).astype(np.float32, copy=False)
+        if chunks
+        else np.empty((0, 5), dtype=np.float32)
+    )
+    chunk_lengths = np.asarray([len(chunk) for chunk in chunks], dtype=np.int32)
+    history_stem = Path(task_env.eval_video_path) / f"episode{episode}_history"
+    np.savez_compressed(
+        history_stem.with_suffix(".npz"),
+        actions=actions,
+        chunk_lengths=chunk_lengths,
+        actual_states=np.asarray(task_env.flying_hand_eval_actual_states, dtype=np.float32),
+        target_states=np.asarray(task_env.flying_hand_eval_target_states, dtype=np.float32),
+    )
+    metadata = {
+        "format_version": 2,
+        "task_name": str(task_name),
+        "task_namespace": "flying_hand",
+        "task_config": str(task_config),
+        "episode": int(episode),
+        "seed": int(seed),
+        "instruction": str(instruction),
+        "success": bool(success),
+        "fps": float(fps),
+        "timestep": float(task_env.sim_timestep),
+        "save_freq": int(task_env.save_freq),
+        "enable_dynamics": bool(task_env.enable_dynamics),
+        "render_shader": str(task_env.render_shader),
+        "render_samples_per_pixel": int(task_env.render_samples_per_pixel),
+        "render_path_depth": int(task_env.render_path_depth),
+        "render_denoiser": str(task_env.render_denoiser),
+        "video_sizes": dict(video_sizes),
+        "action_count": int(task_env.take_action_cnt),
+    }
+    history_stem.with_suffix(".json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return history_stem.with_suffix(".npz")
+
+
+def rerender_flying_hand_eval_histories(replay_dir, video_dir):
+    """Render all saved Flying-Hand episodes after policy evaluation finishes."""
+    replay_dir = Path(replay_dir)
+    histories = sorted(replay_dir.glob("episode*_history.npz"))
+    if not histories:
+        raise RuntimeError(f"No Flying-Hand replay histories found in {replay_dir}")
+    video_dir = Path(video_dir)
+    video_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("rerender_flying_hand_eval.py")),
+            str(replay_dir),
+            "--output-dir",
+            str(video_dir),
+        ],
+        check=True,
+    )
+    return len(histories)
+
+
 def apply_task_overrides(task_args, usr_args):
-    """Apply command-line values that correspond to task YAML fields."""
+    """Apply safe task overrides while preserving the Flying-Hand sim contract."""
+    protected_flying_hand_keys = {
+        "timestep",
+        "save_freq",
+        "render_shader",
+        "texture_type",
+        "enable_dynamics",
+        "embodiment",
+        "camera",
+        "domain_randomization",
+        "flying_hand_dynamics",
+    }
+    is_flying_hand = "flying-hand" in task_args.get("embodiment", [])
     for key in task_args.keys() & usr_args.keys():
+        if is_flying_hand and key in protected_flying_hand_keys:
+            if usr_args[key] != task_args[key]:
+                raise ValueError(
+                    f"Flying-Hand simulation field {key!r} is owned by the selected "
+                    f"task YAML ({task_args[key]!r}); deployment requested {usr_args[key]!r}. "
+                    "Select the matching direct/dynamics task_config instead."
+                )
+            continue
         task_args[key] = usr_args[key]
+
+
+def flying_hand_simulation_contract(task_args, instruction_type):
+    """Return a stable, policy-independent record of the eval environment."""
+    keys = (
+        "task_config",
+        "timestep",
+        "save_freq",
+        "render_shader",
+        "texture_type",
+        "enable_dynamics",
+        "embodiment",
+        "camera",
+        "domain_randomization",
+        "flying_hand_dynamics",
+    )
+    contract = {key: task_args[key] for key in keys}
+    contract["instruction_type"] = str(instruction_type)
+    canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+    return {
+        "format_version": 1,
+        "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "contract": contract,
+    }
 
 
 def main(usr_args):
@@ -172,11 +300,29 @@ def main(usr_args):
         save_dir = Path(eval_output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    is_flying_hand = "flying-hand" in embodiment_type
+    if is_flying_hand:
+        contract = flying_hand_simulation_contract(args, instruction_type)
+        (save_dir / "_simulation_contract.json").write_text(
+            json.dumps(contract, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Flying-Hand simulation contract: {contract['sha256']}")
+
+    video_sizes = {}
+    eval_video_fps = None
+    replay_dir = None
+    video_dir = None
     if args["eval_video_log"]:
         video_sizes = get_eval_video_sizes(args)
         eval_video_fps = get_eval_video_fps(args)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        args["eval_video_save_dir"] = save_dir
+        if is_flying_hand:
+            replay_dir = save_dir / "replay"
+            video_dir = save_dir / "video"
+            replay_dir.mkdir(parents=True, exist_ok=True)
+            args["eval_video_save_dir"] = replay_dir
+        else:
+            args["eval_video_save_dir"] = save_dir
 
     # output camera config
     print("============= Config =============\n")
@@ -201,8 +347,14 @@ def main(usr_args):
     print("\033[94mEmbodiment Config:\033[0m " + embodiment_name)
     print("\n==================================")
 
-    TASK_ENV = class_decorator(args["task_name"])
+    task_namespace = "flying_hand" if "flying-hand" in embodiment_type else None
+    TASK_ENV = class_decorator(args["task_name"], task_namespace=task_namespace)
+    args["task_namespace"] = task_namespace
     args["policy_name"] = policy_name
+    # Policy adapters must not infer the robot from a task name such as
+    # ``move_bottle``.  The selected task YAML is the authoritative source for
+    # the embodiment, so expose one common, explicit deployment field.
+    usr_args["robot_type"] = "flying_hand" if is_flying_hand else "robotwin"
     usr_args["left_arm_dim"] = len(args["left_embodiment_config"].get("arm_joints_name", [[]])[0])
     usr_args["right_arm_dim"] = len(args["right_embodiment_config"].get("arm_joints_name", [[], []])[1])
 
@@ -211,8 +363,6 @@ def main(usr_args):
     st_seed = 100000 * (1 + seed)
     suc_nums = []
     test_num = int(usr_args.get("eval_num_episodes", 100))
-    eval_video_episode_limit = int(usr_args.get("eval_video_episode_limit", 1))
-    eval_video_max_seconds = float(usr_args.get("eval_video_max_seconds", 30.0))
     topk = 1
 
     model = get_model(usr_args)
@@ -225,8 +375,6 @@ def main(usr_args):
                                    video_sizes=video_sizes,
                                    eval_video_fps=eval_video_fps,
                                    instruction_type=instruction_type,
-                                   eval_video_episode_limit=eval_video_episode_limit,
-                                   eval_video_max_seconds=eval_video_max_seconds,
                                    diagnostics_path=save_dir / "policy_diagnostics.jsonl")
     suc_nums.append(suc_num)
 
@@ -238,6 +386,18 @@ def main(usr_args):
         file.write(f"Instruction Type: {instruction_type}\n\n")
         # file.write(str(task_reward) + '\n')
         file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
+
+    if is_flying_hand and args["eval_video_log"]:
+        # Rendering starts only after policy inference has completely finished.
+        # Releasing the model first leaves as much GPU memory as possible for RT/OIDN.
+        del model
+        gc.collect()
+        torch_module = sys.modules.get("torch")
+        if torch_module is not None and torch_module.cuda.is_available():
+            torch_module.cuda.empty_cache()
+        print(f"Evaluation complete; rendering all histories from {replay_dir}")
+        rendered = rerender_flying_hand_eval_histories(replay_dir, video_dir)
+        print(f"Rendered {rendered} complete episode(s) to {video_dir}")
 
     print(f"Data has been saved to {file_path}")
     # return task_reward
@@ -252,8 +412,6 @@ def eval_policy(task_name,
                 video_sizes=None,
                 eval_video_fps=None,
                 instruction_type=None,
-                eval_video_episode_limit=1,
-                eval_video_max_seconds=30.0,
                 diagnostics_path=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
     print(f"\033[34mPolicy Name: {args['policy_name']}\033[0m")
@@ -294,14 +452,13 @@ def eval_policy(task_name,
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
-                # stack_trace = traceback.format_exc()
-                # print(" -------------")
-                # print("Error: ", e)
-                # print(" -------------")
                 TASK_ENV.close_env()
                 now_seed += 1
                 args["render_freq"] = render_freq
-                print("error occurs !")
+                print(
+                    f"Skipping invalid expert seed for task={task_name!r}, "
+                    f"seed={now_seed - 1}: {type(e).__name__}: {e}"
+                )
                 continue
 
         if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
@@ -316,19 +473,32 @@ def eval_policy(task_name,
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
         episode_info_list = [episode_info["info"]]
-        results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        random.seed(now_seed)
+        results = generate_episode_descriptions(
+            args["task_name"],
+            episode_info_list,
+            test_num,
+            instruction_namespace=args.get("task_namespace"),
+        )
+        # Flying-Hand training converters use the first generated instruction
+        # for each episode, so evaluation must use the same deterministic text.
+        instruction = results[0][instruction_type][0]
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
-        record_episode_video = (
-            TASK_ENV.eval_video_path is not None
-            and now_id < eval_video_episode_limit
-        )
-        if record_episode_video:
-            TASK_ENV.eval_video_frame_limit = max(
-                1,
-                int(round(eval_video_max_seconds * eval_video_fps)),
-            )
+        is_flying_hand = "flying-hand" in args.get("embodiment", [])
+        record_episode_history = is_flying_hand and TASK_ENV.eval_video_path is not None
+        live_episode_video = not is_flying_hand and TASK_ENV.eval_video_path is not None
+        if record_episode_history:
+            TASK_ENV.record_flying_hand_eval_history = True
+            TASK_ENV.flying_hand_eval_action_chunks = []
+            TASK_ENV.flying_hand_eval_actual_states = [
+                np.asarray(TASK_ENV._get_flying_hand_actual_state(), dtype=np.float32)
+            ]
+            TASK_ENV.flying_hand_eval_target_states = [
+                np.asarray(TASK_ENV._get_flying_hand_target_state(), dtype=np.float32)
+            ]
+        if live_episode_video:
+            TASK_ENV.eval_video_frame_limit = None
             TASK_ENV.eval_video_frames_written = 0
             ffmpegs = {}
             for camera_name, video_size in video_sizes.items():
@@ -370,8 +540,23 @@ def eval_policy(task_name,
                 succ = True
                 break
         # task_total_reward += TASK_ENV.episode_score
-        if record_episode_video:
+        if live_episode_video:
             TASK_ENV._del_eval_video_ffmpeg()
+
+        if record_episode_history:
+            history_path = save_flying_hand_eval_history(
+                TASK_ENV,
+                task_name=task_name,
+                task_config=args["task_config"],
+                episode=TASK_ENV.test_num,
+                seed=now_seed,
+                instruction=instruction,
+                success=succ,
+                video_sizes=video_sizes,
+                fps=eval_video_fps,
+            )
+            TASK_ENV.record_flying_hand_eval_history = False
+            print(f"Saved 20 Hz replay history: {history_path}")
 
         if succ:
             TASK_ENV.suc += 1
@@ -445,7 +630,8 @@ def parse_args_and_config():
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from tests.test_render import SapienRenderSmokeTest
-    SapienRenderSmokeTest()
+    if os.environ.get("SKIP_RENDER_SMOKE", "0").strip().lower() not in {"1", "true", "yes"}:
+        SapienRenderSmokeTest()
 
     usr_args = parse_args_and_config()
 

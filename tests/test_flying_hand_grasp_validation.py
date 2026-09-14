@@ -62,6 +62,7 @@ def _environment(actor):
     env.flying_hand_grasp_validation = {
         "center_bounds_min": np.array([0.04, -0.08, -0.12]),
         "center_bounds_max": np.array([0.16, 0.08, 0.06]),
+        "min_object_overlap_ratio": 0.30,
     }
     return env
 
@@ -211,7 +212,7 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
 
         def reject_capture(task_env, event):
             captures.append(event)
-            event["attachment"] = "rejected_box_center_outside_grasp_region"
+            event["attachment"] = "rejected_insufficient_box_overlap"
             return False
 
         policy._attach_actor_in_grasp_space = reject_capture
@@ -248,7 +249,7 @@ class FlyingHandGraspValidationTest(unittest.TestCase):
         self.assertEqual(policy.grasp_diagnostics[-1]["command_latency_seconds"], 0.0)
         self.assertEqual(
             policy.grasp_diagnostics[-1]["attachment"],
-            "rejected_box_center_outside_grasp_region",
+            "rejected_insufficient_box_overlap",
         )
         self.assertFalse(
             policy.grasp_diagnostics[-1]["gripper_close_commanded"]

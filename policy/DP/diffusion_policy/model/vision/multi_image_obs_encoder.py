@@ -24,6 +24,10 @@ class MultiImageObsEncoder(ModuleAttrMixin):
         # renormalize rgb input with imagenet normalization
         # assuming input in [0,1]
         imagenet_norm: bool = False,
+        # optional projection applied to every RGB encoder output
+        rgb_feature_dim: int = None,
+        # optional MLP applied after concatenating all observation features
+        feature_mlp_dims: Tuple[int, ...] = None,
     ):
         """
         Assumes rgb input: B,C,H,W
@@ -122,6 +126,29 @@ class MultiImageObsEncoder(ModuleAttrMixin):
         self.rgb_keys = rgb_keys
         self.low_dim_keys = low_dim_keys
         self.key_shape_map = key_shape_map
+        self.rgb_feature_dim = rgb_feature_dim
+        if rgb_feature_dim is None:
+            self.shared_rgb_projection = nn.Identity()
+            self.rgb_projection_map = nn.ModuleDict()
+        elif share_rgb_model:
+            self.shared_rgb_projection = nn.LazyLinear(rgb_feature_dim)
+            self.rgb_projection_map = nn.ModuleDict()
+        else:
+            self.shared_rgb_projection = nn.Identity()
+            self.rgb_projection_map = nn.ModuleDict({
+                key: nn.LazyLinear(rgb_feature_dim) for key in rgb_keys
+            })
+
+        feature_mlp_dims = tuple(feature_mlp_dims or ())
+        feature_mlp = []
+        for index, output_dim in enumerate(feature_mlp_dims):
+            if index == 0:
+                feature_mlp.append(nn.LazyLinear(output_dim))
+            else:
+                feature_mlp.append(nn.Linear(feature_mlp_dims[index - 1], output_dim))
+            if index < len(feature_mlp_dims) - 1:
+                feature_mlp.append(nn.ReLU())
+        self.feature_mlp = nn.Sequential(*feature_mlp) if feature_mlp else nn.Identity()
 
     def forward(self, obs_dict):
         batch_size = None
@@ -143,6 +170,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
             imgs = torch.cat(imgs, dim=0)
             # (N*B,D)
             feature = self.key_model_map["rgb"](imgs)
+            feature = self.shared_rgb_projection(feature)
             # (N,B,D)
             feature = feature.reshape(-1, batch_size, *feature.shape[1:])
             # (B,N,D)
@@ -161,6 +189,8 @@ class MultiImageObsEncoder(ModuleAttrMixin):
                 assert img.shape[1:] == self.key_shape_map[key]
                 img = self.key_transform_map[key](img)
                 feature = self.key_model_map[key](img)
+                if self.rgb_feature_dim is not None:
+                    feature = self.rgb_projection_map[key](feature)
                 features.append(feature)
 
         # process lowdim input
@@ -175,7 +205,7 @@ class MultiImageObsEncoder(ModuleAttrMixin):
 
         # concatenate all features
         result = torch.cat(features, dim=-1)
-        return result
+        return self.feature_mlp(result)
 
     @torch.no_grad()
     def output_shape(self):

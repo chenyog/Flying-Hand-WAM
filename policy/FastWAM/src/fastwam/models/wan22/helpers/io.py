@@ -2,6 +2,7 @@ import glob
 import hashlib
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Optional, Union
 
 import torch
@@ -49,7 +50,8 @@ class ModelConfig:
         if os.environ.get("DIFFSYNTH_MODEL_BASE_PATH") is not None:
             self.local_model_path = os.environ.get("DIFFSYNTH_MODEL_BASE_PATH")
         elif self.local_model_path is None:
-            self.local_model_path = "./checkpoints/"
+            # Resolve the repository-local model store independently of cwd.
+            self.local_model_path = str(Path(__file__).resolve().parents[5] / "checkpoints")
 
     def require_downloading(self):
         if self.path is not None:

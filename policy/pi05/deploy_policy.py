@@ -8,7 +8,7 @@ parent_directory = os.path.dirname(current_file_path)
 sys.path.append(parent_directory)
 
 from pi_model import *
-from envs.flying_hand.eval_control import execute_action_chunk, is_flying_hand_observation, reset_reference
+from envs.flying_hand.eval_control import execute_action_chunk, is_flying_hand_observation, reset_execution_state
 
 
 # Encode observation for the model
@@ -47,7 +47,7 @@ def eval(TASK_ENV, model, observation):
     if is_flying_hand_observation(observation):
         model.update_observation_window(encoded["images"], encoded["state"])
         execute_action_chunk(TASK_ENV, model, model.get_action())
-        return TASK_ENV.get_obs()
+        return None
 
     input_rgb_arr, input_state = encoded
     model.update_observation_window(input_rgb_arr, input_state)
@@ -67,4 +67,4 @@ def eval(TASK_ENV, model, observation):
 
 def reset_model(model):
     model.reset_obsrvationwindows()
-    reset_reference(model)
+    reset_execution_state(model)

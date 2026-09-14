@@ -168,17 +168,7 @@ def main(cfg: DictConfig):
     _append_override(overrides, "policy_name", cfg.EVALUATION.policy_name)
     _append_override(overrides, "instruction_type", cfg.EVALUATION.instruction_type)
     _append_override(overrides, "eval_num_episodes", cfg.EVALUATION.eval_num_episodes)
-    _append_override(
-        overrides,
-        "eval_video_episode_limit",
-        cfg.EVALUATION.get("eval_video_episode_limit"),
-    )
-    _append_override(
-        overrides,
-        "eval_video_max_seconds",
-        cfg.EVALUATION.get("eval_video_max_seconds"),
-    )
-
+    _append_override(overrides, "eval_video_log", cfg.EVALUATION.eval_video_log)
     _append_override(overrides, "sim_cfg_path", str(sim_cfg_path))
     _append_override(overrides, "sim_task", sim_task)
     _append_override(overrides, "eval_output_dir", str(eval_base))

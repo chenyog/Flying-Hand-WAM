@@ -35,7 +35,15 @@ class PI0:
         config = _config.get_config(self.train_config_name)
 
         specified_path = f"policy/pi0/checkpoints/{self.train_config_name}/{self.model_name}/{self.checkpoint_id}/assets/"
-        entries = os.listdir(specified_path)
+        entries = sorted(
+            entry for entry in os.listdir(specified_path)
+            if os.path.isdir(os.path.join(specified_path, entry))
+        )
+        if len(entries) != 1:
+            raise ValueError(
+                f"Expected exactly one normalization asset directory in {specified_path}, "
+                f"found {entries}"
+            )
         assets_id = entries[0]
 
         self.policy = _policy_config.create_trained_policy(

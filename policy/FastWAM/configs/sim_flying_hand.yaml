@@ -26,15 +26,16 @@ EVALUATION:
   task_namespace: flying_hand
   task_name: null
   task_config: flying_hand_clean
-  instruction_type: unseen
+  instruction_type: seen
   eval_num_episodes: 100
-  # Save a dense simulation-time video for the first episode of every task.
-  eval_video_episode_limit: 1
-  eval_video_max_seconds: 30.0
+  # Large quantitative evaluations should not save replay histories or render
+  # videos unless explicitly requested by the caller.
+  eval_video_log: false
   output_dir: /data/Flying-Hand-WAM/eval_results/fastwam/flying_hand/${hydra:runtime.choices.task}/${now:%Y%m%d_%H%M%S}
   action_horizon: null
-  # Preserve the trained 20 Hz, 24-action execution window. Each waypoint is
-  # tracked at its original 0.05 s interval without MINCO time optimization.
+  # FastWAM-specific receding-horizon window, independent of the task
+  # environment. The model predicts 32 actions and executes the first 24
+  # before replanning (24 / 20 Hz = 1.2 s).
   replan_steps: 24
   num_inference_steps: ${eval_num_inference_steps}
   sigma_shift: null

@@ -1,10 +1,10 @@
 import h5py, pickle
 import numpy as np
 import os
-import cv2
 from collections.abc import Mapping, Sequence
 import shutil
 from .images_to_video import images_to_video
+from .rgb_codec import RGB_JPEG_CODEC, RGB_JPEG_CODEC_ATTR, encode_rgb_jpeg
 
 
 def images_encoding(imgs):
@@ -12,8 +12,7 @@ def images_encoding(imgs):
     padded_data = []
     max_len = 0
     for i in range(len(imgs)):
-        success, encoded_image = cv2.imencode(".jpg", imgs[i])
-        jpeg_data = encoded_image.tobytes()
+        jpeg_data = encode_rgb_jpeg(imgs[i])
         encode_data.append(jpeg_data)
         max_len = max(max_len, len(jpeg_data))
     # padding
@@ -86,6 +85,7 @@ def pkl_files_to_hdf5_and_video(pkl_files, hdf5_path, video_path, fps=30.0):
 
     with h5py.File(hdf5_path, "w") as f:
         create_hdf5_from_dict(f, data_list)
+        f.attrs[RGB_JPEG_CODEC_ATTR] = RGB_JPEG_CODEC
 
 
 def process_folder_to_hdf5_video(folder_path, hdf5_path, video_path, fps=30.0):

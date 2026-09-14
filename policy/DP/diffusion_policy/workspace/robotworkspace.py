@@ -82,8 +82,6 @@ class RobotWorkspace(BaseWorkspace):
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
-        seed = cfg.training.seed
-        head_camera_type = cfg.head_camera_type
 
         # resume training
         if cfg.training.resume:
@@ -107,13 +105,29 @@ class RobotWorkspace(BaseWorkspace):
         if cfg.training.use_ema:
             self.ema_model.set_normalizer(normalizer)
 
+        # Compute the scheduler horizon from the effective number of batches.
+        # This also remains correct when a debug/config override caps an epoch.
+        train_batches_per_epoch = len(train_dataloader)
+        if cfg.training.max_train_steps is not None:
+            train_batches_per_epoch = min(
+                train_batches_per_epoch,
+                int(cfg.training.max_train_steps),
+            )
+        if train_batches_per_epoch < 1:
+            raise ValueError(
+                "Training dataloader has no complete batches. Reduce the per-GPU "
+                "batch size or provide more training sequences."
+            )
+        num_training_steps = (
+            train_batches_per_epoch * int(cfg.training.num_epochs)
+        ) // int(cfg.training.gradient_accumulate_every)
+
         # configure lr scheduler
         lr_scheduler = get_scheduler(
             cfg.training.lr_scheduler,
             optimizer=self.optimizer,
             num_warmup_steps=cfg.training.lr_warmup_steps,
-            num_training_steps=(len(train_dataloader) * cfg.training.num_epochs) //
-            cfg.training.gradient_accumulate_every,
+            num_training_steps=num_training_steps,
             # pytorch assumes stepping LRScheduler every epoch
             # however huggingface diffusers steps it every batch
             last_epoch=self.global_step - 1,
@@ -235,7 +249,7 @@ class RobotWorkspace(BaseWorkspace):
                             "lr": lr_scheduler.get_last_lr()[0],
                         }
 
-                        is_last_batch = batch_idx == (len(train_dataloader) - 1)
+                        is_last_batch = batch_idx == (train_batches_per_epoch - 1)
                         if not is_last_batch:
                             # log of last step is combined with validation and rollout
                             json_logger.log(step_log)
@@ -271,7 +285,7 @@ class RobotWorkspace(BaseWorkspace):
                 #     step_log.update(runner_log)
 
                 # run validation
-                if (self.epoch % cfg.training.val_every) == 0:
+                if ((self.epoch + 1) % cfg.training.val_every) == 0:
                     with torch.no_grad():
                         val_losses = list()
                         with tqdm.tqdm(
@@ -321,9 +335,26 @@ class RobotWorkspace(BaseWorkspace):
 
                 # checkpoint
                 if self.is_main_process and ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
-                    # checkpointing
-                    save_name = pathlib.Path(self.cfg.task.dataset.zarr_path).stem
-                    self.save_checkpoint(f"checkpoints/{save_name}-{seed}/{self.epoch + 1}.ckpt")  # TODO
+                    # Keep periodic checkpoints inside the timestamped Hydra
+                    # output directory so independent runs cannot overwrite
+                    # one another.
+                    periodic_ckpt_path = pathlib.Path(self.output_dir).joinpath(
+                        "checkpoints",
+                        f"epoch={self.epoch + 1:04d}.ckpt",
+                    )
+                    self.save_checkpoint(
+                        periodic_ckpt_path,
+                        use_thread=False,
+                    )
+                    if cfg.checkpoint.topk.monitor_key in step_log:
+                        metric_dict = {
+                            key.replace("/", "_"): value
+                            for key, value in step_log.items()
+                        }
+                        metric_dict["epoch"] = self.epoch + 1
+                        topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
+                        if topk_ckpt_path is not None:
+                            self.save_checkpoint(path=topk_ckpt_path, use_thread=False)
 
                 if self.distributed:
                     dist.barrier(device_ids=[device.index])

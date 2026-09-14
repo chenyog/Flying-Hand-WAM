@@ -107,10 +107,10 @@ def _begin_isolated_carry(env, actor):
         env.task_failed = True
         raise UnStableError(
             "Refusing isolated carry for "
-            f"{actor.get_name()!r}: box center "
-            f"{diagnostic['actor_center_u']} is outside gripper bounds "
-            f"[{diagnostic['center_bounds_min_u']}, "
-            f"{diagnostic['center_bounds_max_u']}]"
+            f"{actor.get_name()!r}: only "
+            f"{diagnostic['object_overlap_ratio']:.3f} of the actor box "
+            "overlaps the Flying-Hand grasp region "
+            f"(minimum {diagnostic['min_object_overlap_ratio']:.3f})"
         )
 
     restore_released_actor_collisions(env)
@@ -157,8 +157,9 @@ def set_isolated_carried_actor_target(env, actor, pose):
         restore_isolated_carried_actor(env)
         raise UnStableError(
             "Stopping isolated carry for "
-            f"{actor.get_name()!r}: target box center "
-            f"{diagnostic['actor_center_u']} left the gripper bounds"
+            f"{actor.get_name()!r}: target box overlap "
+            f"{diagnostic['object_overlap_ratio']:.3f} is below the "
+            f"minimum {diagnostic['min_object_overlap_ratio']:.3f}"
         )
     _set_isolated_actor_pose(actor, pose)
 
@@ -845,6 +846,23 @@ class TaskMotionPlanner:
         diagnostic["reach_action"] = action
         self._wait_until_reached(pose, diagnostic)
         is_grasp = action == "close"
+        if is_grasp:
+            grasp_diagnostics = []
+            for actor in self.env.get_flying_hand_grasp_candidates():
+                actor_diagnostic = self.env.get_flying_hand_grasp_diagnostic(
+                    actor,
+                    hand_pose=self.env.flying_hand.get_root_pose(),
+                )
+                actor_diagnostic["stage"] = "expert_grasp_command"
+                grasp_diagnostics.append(actor_diagnostic)
+            self.env.flying_hand_grasp_diagnostics.extend(grasp_diagnostics)
+            if not any(item["eligible"] for item in grasp_diagnostics):
+                self.env.plan_success = False
+                self.env.task_failed = True
+                raise UnStableError(
+                    "Refusing expert grasp: no actor box has enough volume "
+                    "inside the Flying-Hand grasp region"
+                )
         if qpos is None:
             qpos = self.env.flying_hand_config["gripper"][
                 "close_qpos" if is_grasp else "open_qpos"

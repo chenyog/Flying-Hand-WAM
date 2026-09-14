@@ -4,6 +4,7 @@ import abc
 from collections.abc import Sequence
 import dataclasses
 import difflib
+import hashlib
 import logging
 import pathlib
 from typing import Any, Protocol, TypeAlias
@@ -63,6 +64,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Local LeRobot dataset roots. When set, all roots are concatenated in order.
+    dataset_dirs: Sequence[str] = ()
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -134,6 +137,8 @@ class ModelTransformFactory(GroupFactory):
 class DataConfigFactory(abc.ABC):
     # The LeRobot repo id.
     repo_id: str = tyro.MISSING
+    # Optional local LeRobot roots. Exposed as --data.dataset-dirs on the CLI.
+    dataset_dirs: Sequence[str] = ()
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -145,10 +150,18 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        if self.assets.asset_id is not None:
+            asset_id = self.assets.asset_id
+        elif self.dataset_dirs:
+            resolved_dirs = [str(pathlib.Path(path).expanduser().resolve()) for path in self.dataset_dirs]
+            digest = hashlib.sha256("\0".join(resolved_dirs).encode()).hexdigest()[:12]
+            asset_id = f"datasets_{digest}"
+        else:
+            asset_id = repo_id
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
+            dataset_dirs=tuple(self.dataset_dirs),
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
         )
@@ -423,7 +436,7 @@ _CONFIGS = [
             action_horizon=32,
         ),
         data=LeRobotFlyingHandDataConfig(
-            repo_id="flying_hand_all_tasks",
+            repo_id="flying_hand_direct_all_tasks",
             base_config=DataConfig(local_files_only=True, prompt_from_task=True),
         ),
         freeze_filter=pi0.Pi0Config(
@@ -434,7 +447,7 @@ _CONFIGS = [
         ).get_freeze_filter(),
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi0/checkpoints/pi0_base/params"),
-        num_train_steps=30000,
+        num_train_steps=50000,
         fsdp_devices=1,
     ),
     TrainConfig(
@@ -446,7 +459,7 @@ _CONFIGS = [
             action_horizon=32,
         ),
         data=LeRobotFlyingHandDataConfig(
-            repo_id="flying_hand_all_tasks",
+            repo_id="flying_hand_direct_all_tasks",
             base_config=DataConfig(local_files_only=True, prompt_from_task=True),
         ),
         # No LoRA variant is used, so get_freeze_filter() returns nnx.Nothing
@@ -460,7 +473,7 @@ _CONFIGS = [
         # Conservative global batch for full fine-tuning; override after checking VRAM.
         batch_size=8,
         weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi0/checkpoints/pi0_base/params"),
-        num_train_steps=30000,
+        num_train_steps=50000,
         fsdp_devices=8,
     ),
     TrainConfig(
@@ -471,7 +484,7 @@ _CONFIGS = [
             action_horizon=32,
         ),
         data=LeRobotFlyingHandDataConfig(
-            repo_id="flying_hand_all_tasks",
+            repo_id="flying_hand_direct_all_tasks",
             base_config=DataConfig(local_files_only=True, prompt_from_task=True),
         ),
         freeze_filter=pi0_fast.Pi0FASTConfig(
@@ -481,7 +494,7 @@ _CONFIGS = [
         ).get_freeze_filter(),
         batch_size=32,
         weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
-        num_train_steps=30000,
+        num_train_steps=50000,
         fsdp_devices=1,
     ),
     # pi0_base by lora

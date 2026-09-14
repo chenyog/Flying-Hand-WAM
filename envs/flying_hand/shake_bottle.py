@@ -18,6 +18,15 @@ class shake_bottle(FlyingHandBaseTask):
     success_shake_y = 0.10
     success_lift_z = 0.03
 
+    def _reset_shake_progress(self):
+        """Reset actual bottle-trajectory metrics for one episode."""
+        self.max_shake_y = 0.0
+        self.min_shake_displacement_y = 0.0
+        self.max_shake_displacement_y = 0.0
+        self.shake_extreme_visits = 0
+        self.completed_shake_cycles = 0
+        self._last_shake_side = 0
+
     def load_actors(self):
         self._reset_board_slots()
         self.target_slot_id = int(np.random.randint(0, len(self.board_slots)))
@@ -26,7 +35,7 @@ class shake_bottle(FlyingHandBaseTask):
         self.bottle_initial_pose = self.bottle.get_pose()
         self.target_actor = self.bottle
         self.arm_tag = ArmTag("right" if self.bottle.get_pose().p[0] > 0 else "left")
-        self.max_shake_y = 0.0
+        self._reset_shake_progress()
         self.add_prohibit_area(self.bottle, padding=0.1)
 
     def _offset_y(self, pose, y):
@@ -51,18 +60,67 @@ class shake_bottle(FlyingHandBaseTask):
             phase_name="bottle_approach_grasp",
             gripper_after_reach="close",
         )
-        motion.move(
+        planner.plan_and_move_minco(
+            self,
             path,
-            time_hints=[self.grasp_to_pull_out_seconds] + [self.shake_seconds] * (len(path) - 2),
+            [self.grasp_to_pull_out_seconds]
+            + [self.shake_seconds] * (len(path) - 2),
+            save_freq=save_freq,
             phase_name="bottle_shake_cycles",
             carried_actor=self.bottle,
             carried_pose=self.flying_hand.get_root_pose().inv() * self.bottle.get_pose(),
+            step_callback=lambda _env: self.update_flying_hand_policy_progress(),
         )
         self.finish_flying_hand_record(save_freq)
-        self.max_shake_y = max(abs(p.p[1] - self.bottle_initial_pose.p[1]) for p in path)
+        self.info["shake_metrics"] = {
+            "min_displacement_y_m": float(self.min_shake_displacement_y),
+            "max_displacement_y_m": float(self.max_shake_displacement_y),
+            "extreme_visits": int(self.shake_extreme_visits),
+            "completed_cycles": int(self.completed_shake_cycles),
+            "required_cycles": int(self.shake_cycles),
+            "final_lift_m": float(
+                self.bottle.get_pose().p[2] - self.bottle_initial_pose.p[2]
+            ),
+        }
         self.info["info"] = {"{A}": f"001_bottle/base{self.bottle_model_id}"}
         return self.info
 
     def check_success(self):
         pose = self.bottle.get_pose().p
-        return self._task_objects_safe() and self.max_shake_y > self.success_shake_y and pose[2] > self.bottle_initial_pose.p[2] + self.success_lift_z
+        return (
+            self._task_objects_safe()
+            and self.completed_shake_cycles >= self.shake_cycles
+            and pose[2] > self.bottle_initial_pose.p[2] + self.success_lift_z
+        )
+
+    def update_flying_hand_policy_progress(self):
+        """Track completed, alternating shakes from the actual bottle pose.
+
+        A one-sided excursion is not a shake cycle.  Once the bottle is lifted,
+        crossing the positive and negative thresholds in alternation contributes
+        two extreme visits, which is one completed cycle.
+        """
+        pose = self.bottle.get_pose().p
+        if pose[2] <= self.bottle_initial_pose.p[2] + self.success_lift_z:
+            return
+
+        displacement = float(pose[1] - self.bottle_initial_pose.p[1])
+        self.max_shake_y = max(self.max_shake_y, abs(displacement))
+        self.min_shake_displacement_y = min(
+            self.min_shake_displacement_y,
+            displacement,
+        )
+        self.max_shake_displacement_y = max(
+            self.max_shake_displacement_y,
+            displacement,
+        )
+
+        side = 0
+        if displacement >= self.success_shake_y:
+            side = 1
+        elif displacement <= -self.success_shake_y:
+            side = -1
+        if side and side != self._last_shake_side:
+            self._last_shake_side = side
+            self.shake_extreme_visits += 1
+            self.completed_shake_cycles = self.shake_extreme_visits // 2

@@ -726,10 +726,13 @@ class WorldActionRobotWinPolicy:
                 candidates.append((np.linalg.norm(diagnostic["actor_center_u"]), actor))
         event["actors"] = actor_diagnostics
         if not candidates:
-            event["attachment"] = "rejected_box_center_outside_grasp_region"
+            event["attachment"] = "rejected_insufficient_box_overlap"
             return False
 
         _, self.attached_actor = min(candidates, key=lambda item: item[0])
+        from envs.flying_hand import planner
+
+        planner.begin_isolated_carry(task_env, self.attached_actor)
         hand_pose = task_env.flying_hand.get_root_pose()
         self.attached_pose = hand_pose.inv() * self.attached_actor.get_pose()
         event["attachment"] = "attached"
@@ -783,7 +786,7 @@ class WorldActionRobotWinPolicy:
             event["gripper_open_commanded"] = True
 
     def _execute_flying_hand_waypoint_chunk(self, task_env, actions: np.ndarray) -> int:
-        """Use the same Flying-Hand executor as DP, ACT, and Pi policies."""
+        """Execute the chunk already limited by this policy's replan_steps."""
         from envs.flying_hand.eval_control import execute_action_chunk
 
         return execute_action_chunk(task_env, self, actions)
@@ -862,19 +865,16 @@ class WorldActionRobotWinPolicy:
         }
 
     def reset(self) -> None:
-        from envs.flying_hand.eval_control import reset_reference
+        from envs.flying_hand.eval_control import reset_execution_state
 
         self.pending_actions.clear()
-        self.attached_actor = None
-        self.attached_pose = None
-        self.grasp_commanded = False
         self.gripper_state = "open"
         self.grasp_diagnostics = []
         self.action_diagnostics = self._empty_action_diagnostics()
         self.waypoint_diagnostics = []
         self.flight_diagnostics = self._empty_flight_diagnostics()
         self.actor_motion_diagnostics = {}
-        reset_reference(self)
+        reset_execution_state(self)
         self._previous_flight_velocity = None
         self._previous_flight_speed = None
         self._speed_derivative_candidate_sign = 0

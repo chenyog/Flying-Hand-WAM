@@ -100,6 +100,23 @@ def kl_divergence(mu, logvar):
     return total_kld, dimension_wise_kld, mean_kld
 
 
+def temporal_aggregate_actions(all_time_actions, valid_mask, timestep, k=0.01):
+    """Aggregate predictions using explicit occupancy, not action values.
+
+    Zero is a valid Flying-Hand coordinate (notably yaw and gripper), so a
+    prediction containing zero must not be mistaken for an unused slot.
+    """
+    actions = all_time_actions[:, timestep]
+    actions = actions[valid_mask[:, timestep]]
+    if len(actions) == 0:
+        raise RuntimeError(f"No valid ACT prediction for timestep {timestep}")
+    weights = torch.exp(
+        -float(k) * torch.arange(len(actions), device=actions.device, dtype=actions.dtype)
+    )
+    weights = weights / weights.sum()
+    return (actions * weights.unsqueeze(1)).sum(dim=0, keepdim=True)
+
+
 class ACT:
 
     def __init__(self, args_override=None, RoboTwin_Config=None):
@@ -136,12 +153,18 @@ class ACT:
                 self.max_timesteps + self.num_queries,
                 self.state_dim,
             ]).to(self.device)
+            self.all_time_action_valid = torch.zeros(
+                [self.max_timesteps, self.max_timesteps + self.num_queries],
+                dtype=torch.bool,
+                device=self.device,
+            )
             print(f"Temporal aggregation enabled with {self.num_queries} queries")
 
         self.t = 0  # Current timestep
 
         # Load statistics for normalization
         ckpt_dir = args_override.get("ckpt_dir", "")
+        flying_hand_checkpoint = int(args_override.get("action_dim", 14)) == 5
         if ckpt_dir:
             # Load dataset stats for normalization
             stats_path = os.path.join(ckpt_dir, "dataset_stats.pkl")
@@ -150,6 +173,10 @@ class ACT:
                     self.stats = pickle.load(f)
                 print(f"Loaded normalization stats from {stats_path}")
             else:
+                if flying_hand_checkpoint:
+                    raise FileNotFoundError(
+                        f"Flying-Hand ACT requires checkpoint normalization stats: {stats_path}"
+                    )
                 print(f"Warning: Could not find stats file at {stats_path}")
                 self.stats = None
 
@@ -157,10 +184,15 @@ class ACT:
             ckpt_path = os.path.join(ckpt_dir, "policy_last.ckpt")
             print("current pwd:", os.getcwd())
             if os.path.exists(ckpt_path):
-                loading_status = self.policy.load_state_dict(torch.load(ckpt_path))
+                # Load through CPU so a CUDA-authored checkpoint does not
+                # create an extra full-sized temporary allocation on GPU.
+                state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+                loading_status = self.policy.load_state_dict(state_dict)
                 print(f"Loaded policy weights from {ckpt_path}")
                 print(f"Loading status: {loading_status}")
             else:
+                if flying_hand_checkpoint:
+                    raise FileNotFoundError(f"Flying-Hand ACT checkpoint not found: {ckpt_path}")
                 print(f"Warning: Could not find policy checkpoint at {ckpt_path}")
         else:
             self.stats = None
@@ -211,17 +243,12 @@ class ACT:
             if self.temporal_agg:
                 # Match temporal aggregation exactly from imitate_episodes.py
                 self.all_time_actions[[self.t], self.t:self.t + self.num_queries] = (self.all_actions)
-                actions_for_curr_step = self.all_time_actions[:, self.t]
-                actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                actions_for_curr_step = actions_for_curr_step[actions_populated]
-
-                # Use same weighting factor as in imitate_episodes.py
-                k = 0.01
-                exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                exp_weights = exp_weights / exp_weights.sum()
-                exp_weights = (torch.from_numpy(exp_weights).to(self.device).unsqueeze(dim=1))
-
-                raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                self.all_time_action_valid[self.t, self.t:self.t + self.num_queries] = True
+                raw_action = temporal_aggregate_actions(
+                    self.all_time_actions,
+                    self.all_time_action_valid,
+                    self.t,
+                )
             else:
                 # Direct action selection, same as imitate_episodes.py
                 raw_action = self.all_actions[:, self.t % self.query_frequency]

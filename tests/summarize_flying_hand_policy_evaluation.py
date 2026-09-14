@@ -72,7 +72,7 @@ def _aggregate(rows):
     rejected_captures = [
         event
         for event in close_events
-        if event.get("attachment") == "rejected_box_center_outside_grasp_region"
+        if event.get("attachment") == "rejected_insufficient_box_overlap"
     ]
     cancelled_transitions = [
         event for event in grasp_events if event.get("cancelled", False)
@@ -88,7 +88,7 @@ def _aggregate(rows):
         matching = [actor for actor in event.get("actors", []) if actor.get("actor") == attached_name]
         if (
             len(matching) != 1
-            or not matching[0].get("center_inside", False)
+            or not matching[0].get("eligible", False)
         ):
             invalid_attachments.append(event)
     waypoint_tracks = [
@@ -348,7 +348,7 @@ def summarize(input_dirs, output_dir: Path, expected_episodes: int | None):
         f"{total['waypoint_endpoint_within_5cm_rate']:.1%}",
         f"- Invalid actor attachments: {total['invalid_attachments']}",
         f"- Valid actor attachment events: {total['attachments']}",
-        f"- Rejected box-center captures: {total['rejected_captures']}",
+        f"- Rejected insufficient-overlap captures: {total['rejected_captures']}",
         f"- Grasp edge command latency range: "
         f"{total['min_grasp_command_latency_seconds']:.3f}-"
         f"{total['max_grasp_command_latency_seconds']:.3f} s",

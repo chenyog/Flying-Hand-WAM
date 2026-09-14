@@ -61,9 +61,33 @@ def get_val_mask(n_episodes, val_ratio, seed=0):
     # have at least 1 episode for validation, and at least 1 episode for train
     n_val = min(max(1, round(n_episodes * val_ratio)), n_episodes - 1)
     rng = np.random.default_rng(seed=seed)
-    # val_idxs = rng.choice(n_episodes, size=n_val, replace=False)
-    val_idxs = -1
+    val_idxs = rng.choice(n_episodes, size=n_val, replace=False)
     val_mask[val_idxs] = True
+    return val_mask
+
+
+def get_task_stratified_val_mask(episode_task_ids, val_ratio, seed=0):
+    """Split complete episodes while retaining validation coverage per task.
+
+    ``get_val_mask`` is the upstream single-dataset split.  Once multiple task
+    datasets are concatenated, applying it globally can leave a task with no
+    validation episodes.  Reusing it independently for every task preserves
+    its rounding and train/validation safeguards while guaranteeing coverage
+    for every task that has at least two episodes.
+    """
+    episode_task_ids = np.asarray(episode_task_ids)
+    if episode_task_ids.ndim != 1:
+        raise ValueError("episode_task_ids must be a one-dimensional array")
+
+    val_mask = np.zeros(len(episode_task_ids), dtype=bool)
+    for task_offset, task_id in enumerate(np.unique(episode_task_ids)):
+        task_indices = np.flatnonzero(episode_task_ids == task_id)
+        local_mask = get_val_mask(
+            n_episodes=len(task_indices),
+            val_ratio=val_ratio,
+            seed=seed + task_offset,
+        )
+        val_mask[task_indices[local_mask]] = True
     return val_mask
 
 

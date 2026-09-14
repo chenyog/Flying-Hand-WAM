@@ -30,6 +30,7 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         kernel_size=5,
         n_groups=8,
         cond_predict_scale=True,
+        noise_samples=1,
         # parameters passed to step
         **kwargs,
     ):
@@ -77,6 +78,9 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
         self.obs_as_global_cond = obs_as_global_cond
+        if noise_samples < 1:
+            raise ValueError("noise_samples must be at least 1")
+        self.noise_samples = int(noise_samples)
         self.kwargs = kwargs
 
         if num_inference_steps is None:
@@ -224,8 +228,13 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         # generate impainting mask
         condition_mask = self.mask_generator(trajectory.shape)
 
-        # Sample noise that we'll add to the images
-        noise = torch.randn(trajectory.shape, device=trajectory.device)
+        # DROID-style training evaluates multiple noise draws after encoding
+        # each observation batch once.
+        noise = torch.randn(
+            (self.noise_samples,) + tuple(trajectory.shape),
+            device=trajectory.device,
+            dtype=trajectory.dtype,
+        )
         bsz = trajectory.shape[0]
         # Sample a random timestep for each image
         timesteps = torch.randint(
@@ -236,22 +245,33 @@ class DiffusionUnetImagePolicy(BaseImagePolicy):
         ).long()
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
+        noisy_trajectory = torch.cat([
+            self.noise_scheduler.add_noise(trajectory, noise_draw, timesteps)
+            for noise_draw in noise
+        ], dim=0)
 
         # compute loss mask
-        loss_mask = ~condition_mask
+        loss_mask = (~condition_mask).repeat(self.noise_samples, 1, 1)
 
         # apply conditioning
-        noisy_trajectory[condition_mask] = cond_data[condition_mask]
+        repeated_condition_mask = condition_mask.repeat(self.noise_samples, 1, 1)
+        repeated_cond_data = cond_data.repeat(self.noise_samples, 1, 1)
+        noisy_trajectory[repeated_condition_mask] = repeated_cond_data[repeated_condition_mask]
+
+        timesteps = timesteps.repeat(self.noise_samples)
+        if local_cond is not None:
+            local_cond = local_cond.repeat(self.noise_samples, 1, 1)
+        if global_cond is not None:
+            global_cond = global_cond.repeat(self.noise_samples, 1)
 
         # Predict the noise residual
         pred = self.model(noisy_trajectory, timesteps, local_cond=local_cond, global_cond=global_cond)
 
         pred_type = self.noise_scheduler.config.prediction_type
         if pred_type == "epsilon":
-            target = noise
+            target = noise.reshape(-1, *noise.shape[2:])
         elif pred_type == "sample":
-            target = trajectory
+            target = trajectory.repeat(self.noise_samples, 1, 1)
         else:
             raise ValueError(f"Unsupported prediction type {pred_type}")
 

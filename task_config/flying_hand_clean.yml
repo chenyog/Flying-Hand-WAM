@@ -5,13 +5,13 @@ episode_num: 100
 use_seed: false
 timestep: 0.005
 save_freq: 10
+# Use the same visual domain for collection, online policy observations, and
+# post-evaluation replay rendering.
+render_shader: rt
+texture_type: seen
 enable_dynamics: true
 embodiment: [flying-hand]
 language_num: 100
-trajectory_execution:
-  waypoint_hz: 20.0
-  sample_hz: 200.0
-  direct_record_hz: 200.0
 flying_hand_dynamics:
   limits:
     # Set any of these to false for an unconstrained controller ablation.

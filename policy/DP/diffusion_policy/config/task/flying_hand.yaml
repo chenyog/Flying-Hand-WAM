@@ -1,13 +1,14 @@
 name: flying_hand
 
-image_shape: &image_shape [3, -1, -1]
+# Stored Flying-Hand Zarr frames are channel-first RGB. The two cameras have
+# different native resolutions and are resized by the policy encoder.
 shape_meta: &shape_meta
   obs:
     head_cam:
-      shape: *image_shape
+      shape: [3, 360, 480]
       type: rgb
     wrist_cam:
-      shape: *image_shape
+      shape: [3, 480, 640]
       type: rgb
     agent_pos:
       shape: [5]
@@ -33,4 +34,5 @@ dataset:
   pad_after: ${eval:'${n_action_steps}-1'}
   seed: 42
   val_ratio: 0.02
+  stratify_validation_by_task: True
   max_train_episodes: null

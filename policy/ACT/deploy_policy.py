@@ -1,20 +1,44 @@
 import numpy as np
 import torch
 import cv2
+from pathlib import Path
 from .act_policy import ACT
 from argparse import Namespace
 from envs.flying_hand.eval_control import (
     execute_action_chunk,
     is_flying_hand_observation,
-    reset_reference,
+    reset_execution_state,
 )
 
 
-def _is_flying_hand_observation(observation):
-    return is_flying_hand_observation(observation)
+def _checkpoint_chunk_size(ckpt_dir):
+    """Read ACT's query count from the checkpoint architecture."""
+    if not ckpt_dir:
+        raise ValueError("Flying-Hand ACT deployment requires ckpt_dir")
+    checkpoint_path = Path(ckpt_dir).expanduser() / "policy_last.ckpt"
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Flying-Hand ACT checkpoint not found: {checkpoint_path}")
+    state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    query_sizes = {
+        int(value.shape[0])
+        for key, value in state_dict.items()
+        if key.endswith("query_embed.weight") and hasattr(value, "shape") and len(value.shape) == 2
+    }
+    if len(query_sizes) != 1:
+        raise ValueError(
+            "Could not infer one ACT chunk_size from query_embed.weight in "
+            f"{checkpoint_path}; found {sorted(query_sizes)}"
+        )
+    return query_sizes.pop()
+
+
+def _is_flying_hand_deployment(config):
+    """Use the evaluator's explicit embodiment classification, not task text."""
+    return str(config.get("robot_type", "")).strip().lower().replace("-", "_") == "flying_hand"
+
 
 def encode_obs(observation):
-    if _is_flying_hand_observation(observation):
+    if is_flying_hand_observation(observation):
         def image(name):
             value = observation["observation"][name]["rgb"]
             value = cv2.resize(value, (640, 480), interpolation=cv2.INTER_LINEAR)
@@ -40,14 +64,18 @@ def encode_obs(observation):
         "qpos": qpos,
     }
 
+
 def get_model(usr_args):
     config = dict(usr_args)
-    if str(config.get("task_name", "")).startswith("flying_hand"):
+    if _is_flying_hand_deployment(config):
         # ACT checkpoints trained from Flying-Hand data have a 5D state/action
         # and two cameras, unlike the default bimanual arm checkpoint.
         config["action_dim"] = 5
         config["state_dim"] = 5
         config["camera_names"] = ["cam_high", "cam_wrist"]
+        # num_queries is part of the trained DETR architecture. A deploy YAML
+        # default must not silently choose a different action chunk length.
+        config["chunk_size"] = _checkpoint_chunk_size(config["ckpt_dir"])
     return ACT(config, Namespace(**config))
 
 
@@ -57,9 +85,11 @@ def eval(TASK_ENV, model, observation):
 
     # Get action from model
     actions = model.get_action(obs)
-    if _is_flying_hand_observation(observation):
+    if is_flying_hand_observation(observation):
+        # ACT.get_action returns the single action selected for the current
+        # 20 Hz tick. Its chunk_size/temporal_agg logic remains inside ACT.
         execute_action_chunk(TASK_ENV, model, actions)
-        return TASK_ENV.get_obs()
+        return None
     for action in actions:
         TASK_ENV.take_action(action)
         observation = TASK_ENV.get_obs()
@@ -74,11 +104,13 @@ def reset_model(model):
             model.max_timesteps + model.num_queries,
             model.state_dim,
         ]).to(model.device)
+        model.all_time_action_valid = torch.zeros(
+            [model.max_timesteps, model.max_timesteps + model.num_queries],
+            dtype=torch.bool,
+            device=model.device,
+        )
         model.t = 0
         print("Reset temporal aggregation state")
     else:
         model.t = 0
-    reset_reference(model)
-    model.grasp_commanded = False
-    model.attached_actor = None
-    model.attached_pose = None
+    reset_execution_state(model)

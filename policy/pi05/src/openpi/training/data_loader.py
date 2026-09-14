@@ -8,8 +8,8 @@ from typing import Literal, Protocol, SupportsIndex, TypeVar
 
 import jax
 import jax.numpy as jnp
-import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 from lerobot.common.constants import HF_LEROBOT_HOME
+import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 
@@ -129,18 +129,17 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
-def create_torch_dataset(
-    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+def _create_lerobot_dataset(
+    repo_id: str,
+    dataset_root: Path,
+    data_config: _config.DataConfig,
+    action_horizon: int,
 ) -> Dataset:
-    """Create a dataset for training."""
-    repo_id = data_config.repo_id
-    if repo_id is None:
-        raise ValueError("Repo ID is not set. Cannot create dataset.")
-    if repo_id == "fake":
-        return FakeDataset(model_config, num_samples=1024)
+    """Create and validate one local/cache-backed LeRobot dataset."""
+    if data_config.dataset_dirs and not dataset_root.is_dir():
+        raise FileNotFoundError(f"LeRobot dataset directory does not exist: {dataset_root}")
 
-    dataset_root = Path(HF_LEROBOT_HOME) / repo_id
-    if data_config.local_files_only:
+    if data_config.local_files_only or data_config.dataset_dirs:
         required_metadata = (
             "meta/info.json",
             "meta/tasks.jsonl",
@@ -151,11 +150,11 @@ def create_torch_dataset(
         if missing_metadata:
             raise FileNotFoundError(
                 f"Local LeRobot dataset is incomplete at {dataset_root}; missing {missing_metadata}. "
-                "Set HF_LEROBOT_HOME or disable local_files_only to allow downloading."
+                "Set HF_LEROBOT_HOME or provide complete --data.dataset-dirs entries."
             )
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=dataset_root)
-    if data_config.local_files_only:
+    if data_config.local_files_only or data_config.dataset_dirs:
         missing_episodes = [
             dataset_meta.get_data_file_path(episode_index)
             for episode_index in range(dataset_meta.total_episodes)
@@ -166,18 +165,40 @@ def create_torch_dataset(
                 f"Local LeRobot dataset is missing {len(missing_episodes)} episode files at {dataset_root}."
             )
     dataset = lerobot_dataset.LeRobotDataset(
-        data_config.repo_id,
+        repo_id,
         root=dataset_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
-        download_videos=not data_config.local_files_only,
+        download_videos=not (data_config.local_files_only or data_config.dataset_dirs),
     )
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
-
     return dataset
+
+
+def create_torch_dataset(
+    data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
+) -> Dataset:
+    """Create one LeRobot dataset or concatenate all configured dataset_dirs."""
+    if data_config.repo_id == "fake" and not data_config.dataset_dirs:
+        return FakeDataset(model_config, num_samples=1024)
+    if data_config.dataset_dirs:
+        specs = [
+            (Path(dataset_dir).expanduser().resolve().name, Path(dataset_dir).expanduser().resolve())
+            for dataset_dir in data_config.dataset_dirs
+        ]
+    else:
+        if data_config.repo_id is None:
+            raise ValueError("Set repo_id or provide at least one dataset_dirs entry.")
+        specs = [(data_config.repo_id, Path(HF_LEROBOT_HOME) / data_config.repo_id)]
+
+    datasets = [
+        _create_lerobot_dataset(repo_id, root, data_config, action_horizon)
+        for repo_id, root in specs
+    ]
+    return datasets[0] if len(datasets) == 1 else torch.utils.data.ConcatDataset(datasets)
 
 
 def create_rlds_dataset(

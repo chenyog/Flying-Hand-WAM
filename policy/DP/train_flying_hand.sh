@@ -4,59 +4,59 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  Single task, one GPU:
-    train_flying_hand.sh --task-config TASK_CONFIG [options]
+  train_flying_hand.sh [options]
 
-  All tasks, one or more GPUs:
-    train_flying_hand.sh --all-tasks [options]
+Train one DP model on all selected Flying-Hand datasets. The converter uses
+all available episodes from every selected directory.
 
 Options:
-  --task-config PATH   Task path under data/flying_hand (mutually exclusive with --all-tasks)
-  --all-tasks          Merge the selected number of episodes from every task
+  --all-tasks          Explicitly select the all-task mode (default behavior)
+  --dataset-dir PATH   Raw dataset dir containing data/episode*.hdf5; repeat for multiple datasets
+  --run-name NAME      Optional run-name prefix; a UTC timestamp is always appended
   --gpus IDS           GPU ids, for example 0 or 0,1,2,3 (default: 0)
-  --episodes N         Episodes per task for --all-tasks, total episodes otherwise (default: 100)
   --seed N             Training seed (default: 0)
-  --epochs N           Number of epochs (default: 600)
-  --batch-size N       Batch size per GPU (default: 32)
+  --epochs N           Full-dataloader epochs (default: 8000, official image recipe)
+  --batch-size N       Batch size per GPU (default: 64 divided by GPU count)
   --force-convert      Rebuild the Zarr dataset even when it already exists
   -h, --help           Show this help
 
 Examples:
-  train_flying_hand.sh --all-tasks --gpus 0,1,2,3,4,5,6,7 --episodes 100 --epochs 600 --batch-size 32
-  train_flying_hand.sh --task-config blocks_ranking_rgb/flying_hand_clean --gpus 0 --episodes 100
+  train_flying_hand.sh --gpus 0,1,2,3
+  train_flying_hand.sh --dataset-dir /data/set_a --dataset-dir /data/set_b --gpus 0,1
 
-For DDP, batch-size is per GPU and global batch size is batch-size times the GPU count.
+The official Diffusion Policy image recipe uses global batch 64. An explicit
+--batch-size is still per GPU, so global batch is batch-size times GPU count.
 EOF
 }
 
-ALL_TASKS=0
-TASK_CONFIG=""
 GPU_IDS="0"
-EPISODES="100"
 SEED="0"
-EPOCHS="600"
-BATCH_SIZE="32"
+EPOCHS="8000"
+BATCH_SIZE=""
 FORCE_CONVERT=0
+DATASET_DIRS=()
+RUN_NAME_OVERRIDE=""
+ALL_TASKS_EXPLICIT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --all-tasks)
-      ALL_TASKS=1
+      ALL_TASKS_EXPLICIT=1
       shift
       ;;
-    --task-config)
-      [[ $# -ge 2 ]] || { echo "--task-config requires a value" >&2; exit 2; }
-      TASK_CONFIG="$2"
+    --dataset-dir)
+      [[ $# -ge 2 ]] || { echo "--dataset-dir requires a value" >&2; exit 2; }
+      DATASET_DIRS+=("$2")
+      shift 2
+      ;;
+    --run-name)
+      [[ $# -ge 2 ]] || { echo "--run-name requires a value" >&2; exit 2; }
+      RUN_NAME_OVERRIDE="$2"
       shift 2
       ;;
     --gpus)
       [[ $# -ge 2 ]] || { echo "--gpus requires a value" >&2; exit 2; }
       GPU_IDS="$2"
-      shift 2
-      ;;
-    --episodes)
-      [[ $# -ge 2 ]] || { echo "--episodes requires a value" >&2; exit 2; }
-      EPISODES="$2"
       shift 2
       ;;
     --seed)
@@ -90,23 +90,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if (( ALL_TASKS == 1 )) && [[ -n "${TASK_CONFIG}" ]]; then
-  echo "--all-tasks and --task-config are mutually exclusive" >&2
+if (( ALL_TASKS_EXPLICIT == 1 && ${#DATASET_DIRS[@]} > 0 )); then
+  echo "--all-tasks and --dataset-dir cannot be combined" >&2
   exit 2
 fi
-if (( ALL_TASKS == 0 )) && [[ -z "${TASK_CONFIG}" ]]; then
-  echo "Specify --all-tasks or --task-config" >&2
-  usage >&2
+if [[ -n "${RUN_NAME_OVERRIDE}" ]] && [[ ! "${RUN_NAME_OVERRIDE}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "--run-name may contain only letters, digits, dot, underscore, and hyphen" >&2
   exit 2
 fi
 if [[ ! "${GPU_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
   echo "--gpus must be a comma-separated list, for example 0,1,2,3" >&2
   exit 2
 fi
-if ! [[ "${EPISODES}" =~ ^[1-9][0-9]*$ ]] || \
-   ! [[ "${EPOCHS}" =~ ^[1-9][0-9]*$ ]] || \
-   ! [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "episodes, epochs, and batch-size must be positive integers" >&2
+if ! [[ "${EPOCHS}" =~ ^[1-9][0-9]*$ ]] || \
+   { [[ -n "${BATCH_SIZE}" ]] && ! [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; }; then
+  echo "epochs and batch-size must be positive integers" >&2
   exit 2
 fi
 
@@ -122,37 +120,51 @@ fi
 if [[ ! -x "${TORCHRUN_BIN}" ]]; then
   TORCHRUN_BIN="torchrun"
 fi
-if [[ ! -d "${DATA_ROOT}" ]]; then
-  echo "Flying-Hand data root does not exist: ${DATA_ROOT}" >&2
-  exit 1
-fi
-
 IFS=',' read -r -a GPU_ARRAY <<< "${GPU_IDS}"
 GPU_COUNT="${#GPU_ARRAY[@]}"
+REFERENCE_GLOBAL_BATCH_SIZE=64
+if [[ -z "${BATCH_SIZE}" ]]; then
+  if (( REFERENCE_GLOBAL_BATCH_SIZE % GPU_COUNT != 0 )); then
+    echo "Cannot divide official global batch 64 across ${GPU_COUNT} GPUs; pass --batch-size explicitly" >&2
+    exit 2
+  fi
+  BATCH_SIZE=$((REFERENCE_GLOBAL_BATCH_SIZE / GPU_COUNT))
+fi
+GLOBAL_BATCH_SIZE=$((BATCH_SIZE * GPU_COUNT))
 
-if (( ALL_TASKS == 1 )); then
-  ZARR_PATH="${PROJECT_ROOT}/data/flying_hand-all-tasks-${EPISODES}.zarr"
+if (( ${#DATASET_DIRS[@]} > 0 )); then
+  DATASET_FINGERPRINT="$("${PYTHON_BIN}" - "${DATASET_DIRS[@]}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+resolved = [str(pathlib.Path(item).expanduser().resolve()) for item in sys.argv[1:]]
+print(hashlib.sha256("\n".join(resolved).encode()).hexdigest()[:12])
+PY
+)"
+  ZARR_PATH="${PROJECT_ROOT}/data/flying_hand-multi-${DATASET_FINGERPRINT}.zarr"
+  CONVERT_ARGS=(--output "${ZARR_PATH}")
+  for dataset_dir in "${DATASET_DIRS[@]}"; do
+    if [[ ! -d "${dataset_dir}" ]]; then
+      echo "Dataset directory does not exist: ${dataset_dir}" >&2
+      exit 1
+    fi
+    ABS_DATASET_DIR="$(cd "${dataset_dir}" && pwd)"
+    CONVERT_ARGS+=(--dataset-dir "${ABS_DATASET_DIR}")
+  done
+  RUN_NAME="flying_hand_multi_${#DATASET_DIRS[@]}"
+else
+  if [[ ! -d "${DATA_ROOT}" ]]; then
+    echo "Flying-Hand data root does not exist: ${DATA_ROOT}" >&2
+    exit 1
+  fi
+  ZARR_PATH="${PROJECT_ROOT}/data/flying_hand-all-tasks.zarr"
   CONVERT_ARGS=(
     --data-root "${DATA_ROOT}"
     --output "${ZARR_PATH}"
-    --num-episodes "${EPISODES}"
     --all-tasks
   )
   RUN_NAME="flying_hand_all_tasks"
-else
-  TASK_DATA_ROOT="${DATA_ROOT}/${TASK_CONFIG}"
-  if [[ ! -d "${TASK_DATA_ROOT}/data" ]]; then
-    echo "Dataset directory does not exist: ${TASK_DATA_ROOT}/data" >&2
-    exit 1
-  fi
-  SAFE_CONFIG="${TASK_CONFIG//\//_}"
-  ZARR_PATH="${PROJECT_ROOT}/data/flying_hand-${SAFE_CONFIG}-${EPISODES}.zarr"
-  CONVERT_ARGS=(
-    --data-root "${TASK_DATA_ROOT}"
-    --output "${ZARR_PATH}"
-    --num-episodes "${EPISODES}"
-  )
-  RUN_NAME="flying_hand_${SAFE_CONFIG}"
 fi
 
 # Check array metadata, rather than only the directory, so an interrupted
@@ -162,7 +174,8 @@ zarr_complete() {
   [[ -f "${ZARR_PATH}/data/wrist_camera/.zarray" ]] && \
   [[ -f "${ZARR_PATH}/data/state/.zarray" ]] && \
   [[ -f "${ZARR_PATH}/data/action/.zarray" ]] && \
-  [[ -f "${ZARR_PATH}/meta/episode_ends/.zarray" ]]
+  [[ -f "${ZARR_PATH}/meta/episode_ends/.zarray" ]] && \
+  [[ -f "${ZARR_PATH}/meta/episode_task_ids/.zarray" ]]
 }
 
 cd "${PROJECT_ROOT}"
@@ -177,7 +190,8 @@ else
   echo "Use --force-convert to rebuild it from HDF5."
 fi
 
-RUN_ID="${RUN_NAME}_$(date -u +%Y%m%d_%H%M%S)"
+RUN_PREFIX="${RUN_NAME_OVERRIDE:-${RUN_NAME}}"
+RUN_ID="${RUN_PREFIX}_$(date -u +%Y%m%dT%H%M%S_%6NZ)"
 TRAIN_ARGS=(
   --config-name=robot_dp_5.yaml
   task.name=flying_hand
@@ -187,17 +201,12 @@ TRAIN_ARGS=(
   training.seed="${SEED}"
   training.num_epochs="${EPOCHS}"
   training.resume=False
-  exp_name="${RUN_NAME}_dp"
-  expert_data_num="${EPISODES}"
+  exp_name="${RUN_ID}"
   hydra.run.dir="data/outputs/${RUN_ID}"
   hydra.output_subdir=null
 )
 
-if (( ALL_TASKS == 0 )); then
-  TRAIN_ARGS+=(setting="${TASK_CONFIG}")
-else
-  TRAIN_ARGS+=(setting=all_tasks)
-fi
+echo "[launch] run_id=${RUN_ID} output_dir=${PROJECT_ROOT}/data/outputs/${RUN_ID} datasets=${#DATASET_DIRS[@]} per_gpu_batch=${BATCH_SIZE} global_batch=${GLOBAL_BATCH_SIZE}"
 
 if (( GPU_COUNT == 1 )); then
   "${PYTHON_BIN}" train.py "${TRAIN_ARGS[@]}" training.device=cuda:0

@@ -17,7 +17,6 @@ import h5py
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
-import yaml
 
 
 CHUNK_SIZE = 1000
@@ -37,7 +36,7 @@ def default_fastwam_root() -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert Flying-Hand HDF5 episodes to LeRobot format.")
     parser.add_argument("--task-id", default=None, help="Task id, e.g. move_bottle.")
-    parser.add_argument("--all-tasks", action="store_true", help="Convert all task directories under data/flying_hand.")
+    parser.add_argument("--all-tasks", action="store_true", help="Convert all task directories under --input-root.")
     parser.add_argument(
         "--workers",
         type=int,
@@ -45,8 +44,15 @@ def parse_args() -> argparse.Namespace:
         help="Parallel task conversion workers for --all-tasks (1 disables multiprocessing).",
     )
     parser.add_argument("--setting", default="flying_hand_clean", help="Dataset setting directory.")
+    parser.add_argument("--fps", type=float, required=True, help="Source dataset frames per second.")
     parser.add_argument("--instruction-type", choices=["seen", "unseen"], default="seen")
     parser.add_argument("--robotwin-root", type=Path, default=default_robotwin_root())
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        default=None,
+        help="Flying-Hand source root; defaults to ROBOTWIN_ROOT/data/flying_hand.",
+    )
     parser.add_argument(
         "--output-root",
         type=Path,
@@ -88,16 +94,16 @@ def load_json(path: Path):
         return json.load(f)
 
 
-def episode_task(task_id: str, episode_index: int, scene_info: dict, instruction_payload: dict, instruction_type: str) -> str:
-    templates = instruction_payload[instruction_type]
-    task = str(templates[episode_index % len(templates)])
-    info = scene_info[f"episode_{episode_index}"]["info"]
-    for key, value in info.items():
-        value = str(value)
-        task = task.replace(str(key), value)
-        stripped = str(key).strip("{}")
-        task = task.replace("{" + stripped + "}", value)
-    return task
+def episode_task(setting_root: Path, episode_index: int, instruction_type: str) -> str:
+    """Load the exact instruction already generated for this source episode."""
+    path = setting_root / "instructions" / f"episode{episode_index}.json"
+    payload = load_json(path)
+    values = payload.get(instruction_type)
+    if isinstance(values, str):
+        values = [values]
+    if not values or not str(values[0]).strip():
+        raise ValueError(f"Missing non-empty {instruction_type!r} instruction in {path}")
+    return str(values[0]).strip()
 
 
 def video_info(path: Path) -> dict:
@@ -213,7 +219,7 @@ def write_fastwam_dataset_stats(task_ids: list[str], args: argparse.Namespace) -
     num_transition = 0
 
     for task_id in task_ids:
-        data_dir = args.robotwin_root / "data" / "flying_hand" / task_id / args.setting / "data"
+        data_dir = args.input_root / task_id / args.setting / "data"
         episode_paths = train_episode_paths(
             sorted_episode_paths(data_dir),
             val_set_proportion=float(args.stats_val_set_proportion),
@@ -415,18 +421,14 @@ def info_json(total_episodes: int, total_frames: int, total_tasks: int, fps: flo
 
 
 def convert_task(task_id: str, args: argparse.Namespace) -> Path:
-    src_root = args.robotwin_root / "data" / "flying_hand" / task_id / args.setting
+    src_root = args.input_root / task_id / args.setting
     data_dir = src_root / "data"
-    scene_info_path = src_root / "scene_info.json"
-    instruction_path = args.robotwin_root / "description" / "task_instruction" / "flying_hand" / f"{task_id}.json"
     out_root = args.output_root / task_id
 
     if args.overwrite and out_root.exists():
         shutil.rmtree(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    scene_info = load_json(scene_info_path)
-    instruction_payload = load_json(instruction_path)
     episode_paths = sorted_episode_paths(data_dir)
 
     first_ep = int(episode_paths[0].stem.removeprefix("episode"))
@@ -446,7 +448,7 @@ def convert_task(task_id: str, args: argparse.Namespace) -> Path:
     for h5_path in episode_paths:
         ep = int(h5_path.stem.removeprefix("episode"))
         chunk = ep // CHUNK_SIZE
-        task = episode_task(task_id, ep, scene_info, instruction_payload, args.instruction_type)
+        task = episode_task(src_root, ep, args.instruction_type)
         if task not in task_to_index:
             task_to_index[task] = len(task_to_index)
             task_rows.append({"task_index": task_to_index[task], "task": task})
@@ -522,23 +524,21 @@ def main() -> None:
         raise ValueError("Pass exactly one of --task-id or --all-tasks.")
     if args.workers <= 0:
         raise ValueError(f"`--workers` must be positive, got {args.workers}")
-
-    setting_path = args.robotwin_root / "task_config" / f"{args.setting}.yml"
-    with setting_path.open("r", encoding="utf-8") as f:
-        setting = yaml.safe_load(f)
-    timestep, save_freq = float(setting["timestep"]), float(setting["save_freq"])
-    if timestep <= 0 or save_freq <= 0:
-        raise ValueError(f"`timestep` and `save_freq` must be positive in {setting_path}")
-    fps = 1.0 / (timestep * save_freq)
-    args.dataset_fps = int(round(fps)) if abs(fps - round(fps)) < FPS_WARN_TOL else fps
-    print(
-        f"Using dataset fps={args.dataset_fps:g} from "
-        f"{setting_path} "
-        "(computed as 1 / (timestep * save_freq))."
+    if not np.isfinite(args.fps) or args.fps <= 0:
+        raise ValueError(f"`--fps` must be finite and positive, got {args.fps}")
+    args.input_root = (
+        args.input_root.expanduser().resolve()
+        if args.input_root is not None
+        else (args.robotwin_root / "data" / "flying_hand").resolve()
     )
+    if not args.input_root.is_dir():
+        raise FileNotFoundError(f"Flying-Hand input root not found: {args.input_root}")
+
+    args.dataset_fps = int(round(args.fps)) if abs(args.fps - round(args.fps)) < FPS_WARN_TOL else args.fps
+    print(f"Using explicitly specified dataset fps={args.dataset_fps:g}.")
 
     if args.all_tasks:
-        task_ids = sorted(p.name for p in (args.robotwin_root / "data" / "flying_hand").iterdir() if p.is_dir())
+        task_ids = sorted(p.name for p in args.input_root.iterdir() if p.is_dir())
     else:
         task_ids = [args.task_id]
 

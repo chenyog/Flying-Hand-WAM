@@ -15,6 +15,12 @@ import shutil
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+SHARED_UTILS = Path(__file__).resolve().parents[2] / "envs" / "utils"
+if str(SHARED_UTILS) not in sys.path:
+    sys.path.insert(0, str(SHARED_UTILS))
+
+from rgb_codec import decode_hdf5_rgb, require_current_rgb_jpeg_codec
+
 
 def load_hdf5(dataset_path):
     if not os.path.isfile(dataset_path):
@@ -23,6 +29,7 @@ def load_hdf5(dataset_path):
 
     with h5py.File(dataset_path, "r") as root:
         if "flying_hand" in root:
+            require_current_rgb_jpeg_codec(root)
             return {
                 "robot_type": "flying_hand",
                 "state": root["flying_hand/actual_state"][()].astype(np.float32),
@@ -93,6 +100,19 @@ def discover_flying_hand_episodes(data_root, task_config):
     return all_episodes
 
 
+def discover_dataset_dir_episodes(dataset_dirs):
+    """Return episodes from explicit dataset directories in argument order."""
+    all_episodes = []
+    for dataset_dir in dataset_dirs:
+        dataset_dir = Path(dataset_dir).expanduser().resolve()
+        episode_dir = dataset_dir if dataset_dir.name == "data" else dataset_dir / "data"
+        episodes = sorted(episode_dir.glob("episode*.hdf5"), key=_episode_number)
+        if not episodes:
+            raise FileNotFoundError(f"No episode*.hdf5 files found in {episode_dir}")
+        all_episodes.extend(episodes)
+    return all_episodes
+
+
 def write_flying_hand_episode(source, hdf5path, source_label):
     """Write one Flying-Hand source episode in the ACT HDF5 layout."""
     actual = source["state"]
@@ -111,29 +131,41 @@ def write_flying_hand_episode(source, hdf5path, source_label):
     cam_high = []
     cam_wrist = []
     for index in range(length - 1):
-        head = cv2.imdecode(
-            np.frombuffer(source["head_camera"][index], np.uint8), cv2.IMREAD_COLOR
-        )
-        wrist = cv2.imdecode(
-            np.frombuffer(source["wrist_camera"][index], np.uint8), cv2.IMREAD_COLOR
-        )
-        if head is None or wrist is None:
+        try:
+            head = decode_hdf5_rgb(source["head_camera"][index])
+            wrist = decode_hdf5_rgb(source["wrist_camera"][index])
+        except ValueError as exc:
             raise ValueError(
                 f"Failed to decode Flying-Hand image in {source_label}, frame {index}"
-            )
+            ) from exc
         # ACT batches the camera tensors together, so both views use one shape.
         head = cv2.resize(head, (640, 480), interpolation=cv2.INTER_LINEAR)
         wrist = cv2.resize(wrist, (640, 480), interpolation=cv2.INTER_LINEAR)
-        cam_high.append(cv2.cvtColor(head, cv2.COLOR_BGR2RGB))
-        cam_wrist.append(cv2.cvtColor(wrist, cv2.COLOR_BGR2RGB))
+        cam_high.append(head)
+        cam_wrist.append(wrist)
 
     with h5py.File(hdf5path, "w") as f:
+        # ACT's loader historically shifts actions by one frame for legacy
+        # robot datasets. Flying-Hand is written explicitly as
+        # actual[t] -> target[t+1], so mark it as simulation-aligned.
+        f.attrs["sim"] = True
+        f.attrs["robot_type"] = "flying_hand"
         f.create_dataset("action", data=target[1:].astype(np.float32))
         obs = f.create_group("observations")
         obs.create_dataset("qpos", data=actual[:-1].astype(np.float32))
         image = obs.create_group("images")
-        image.create_dataset("cam_high", data=np.stack(cam_high), dtype=np.uint8)
-        image.create_dataset("cam_wrist", data=np.stack(cam_wrist), dtype=np.uint8)
+        # ACT expects dense uint8 arrays, but storing them uncompressed makes
+        # this 1000-episode dataset roughly 677 GiB. HDF5 compression is
+        # transparent to the existing loader and keeps the exact RGB values.
+        image_kwargs = {
+            "dtype": np.uint8,
+            "compression": "gzip",
+            "compression_opts": 1,
+            "shuffle": True,
+            "chunks": (1, 480, 640, 3),
+        }
+        image.create_dataset("cam_high", data=np.stack(cam_high), **image_kwargs)
+        image.create_dataset("cam_wrist", data=np.stack(cam_wrist), **image_kwargs)
 
 
 def _convert_one_flying_hand_episode(task):
@@ -152,6 +184,12 @@ def data_transform_flying_hand_paths(paths, save_path, num_workers=1):
         raise ValueError("No Flying-Hand episodes selected")
     if num_workers <= 0:
         raise ValueError("num_workers must be positive")
+    # Validate every input before replacing an existing converted dataset.
+    for path in paths:
+        with h5py.File(path, "r") as root:
+            if "flying_hand" not in root:
+                raise ValueError(f"Not a Flying-Hand episode: {path}")
+            require_current_rgb_jpeg_codec(root)
     if os.path.exists(save_path):
         shutil.rmtree(save_path)
     os.makedirs(save_path, exist_ok=True)
@@ -276,6 +314,13 @@ if __name__ == "__main__":
         help="Merge episodes from every Flying-Hand task",
     )
     parser.add_argument(
+        "--dataset-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help="Dataset directory containing data/episode*.hdf5; repeat to concatenate datasets",
+    )
+    parser.add_argument(
         "--task-config",
         dest="all_task_config",
         default="flying_hand_clean",
@@ -287,6 +332,10 @@ if __name__ == "__main__":
         help="Output directory for --all-tasks",
     )
     parser.add_argument(
+        "--sim-task-name",
+        help="SIM_TASK_CONFIGS key for an explicit multi-dataset conversion",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -295,9 +344,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.all_tasks:
+    if args.all_tasks or args.dataset_dir:
         if args.task_name or args.task_config or args.expert_data_num:
-            parser.error("--all-tasks cannot be combined with positional task arguments")
+            parser.error("--all-tasks/--dataset-dir cannot be combined with positional task arguments")
+        if args.all_tasks and args.dataset_dir:
+            parser.error("--all-tasks and --dataset-dir cannot be combined")
+        if args.dataset_dir and args.output is None:
+            parser.error("--output is required with --dataset-dir")
+        if args.dataset_dir and not args.sim_task_name:
+            parser.error("--sim-task-name is required with --dataset-dir")
 
         repo_root = Path(__file__).resolve().parents[2]
         data_root = repo_root / "data" / "flying_hand"
@@ -306,11 +361,15 @@ if __name__ == "__main__":
             / "sim-flying_hand"
             / "all-tasks"
         )
-        paths = discover_flying_hand_episodes(data_root, args.all_task_config)
+        paths = (
+            discover_dataset_dir_episodes(args.dataset_dir)
+            if args.dataset_dir
+            else discover_flying_hand_episodes(data_root, args.all_task_config)
+        )
         begin = data_transform_flying_hand_paths(
             paths, str(output), num_workers=args.workers
         )
-        sim_task_name = "sim-flying_hand-all-tasks"
+        sim_task_name = args.sim_task_name or "sim-flying_hand-all-tasks"
         sim_config = {
             "dataset_dir": str(output),
             "num_episodes": begin,
@@ -319,6 +378,7 @@ if __name__ == "__main__":
             "robot_type": "flying_hand",
             "action_dim": 5,
             "source_task_config": args.all_task_config,
+            "source_dataset_dirs": [str(path.expanduser().resolve()) for path in args.dataset_dir],
         }
         SIM_TASK_CONFIGS_PATH = "./SIM_TASK_CONFIGS.json"
         try:
@@ -330,7 +390,15 @@ if __name__ == "__main__":
         with open(SIM_TASK_CONFIGS_PATH, "w") as f:
             json.dump(SIM_TASK_CONFIGS, f, indent=4)
         with open(output / "conversion_complete.json", "w") as f:
-            json.dump({"num_episodes": begin, "task_config": args.all_task_config}, f, indent=2)
+            json.dump(
+                {
+                    "num_episodes": begin,
+                    "task_config": args.all_task_config,
+                    "dataset_dirs": [str(path.expanduser().resolve()) for path in args.dataset_dir],
+                },
+                f,
+                indent=2,
+            )
         print(f"processed {begin} episodes into {output}")
         raise SystemExit(0)
 

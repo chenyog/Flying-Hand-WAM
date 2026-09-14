@@ -10,6 +10,7 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.common.replay_buffer import ReplayBuffer
 from diffusion_policy.common.sampler import (
     SequenceSampler,
+    get_task_stratified_val_mask,
     get_val_mask,
     downsample_mask,
 )
@@ -35,6 +36,7 @@ class RobotImageDataset(BaseImageDataset):
         image_obs_keys=None,
         state_key="state",
         action_key="action",
+        stratify_validation_by_task=False,
     ):
 
         super().__init__()
@@ -50,7 +52,31 @@ class RobotImageDataset(BaseImageDataset):
         # Zarr-backed arrays and only read the requested sequences.
         self.replay_buffer = ReplayBuffer.create_from_path(zarr_path, mode="r")
 
-        val_mask = get_val_mask(n_episodes=self.replay_buffer.n_episodes, val_ratio=val_ratio, seed=seed)
+        if stratify_validation_by_task:
+            meta = self.replay_buffer.root["meta"]
+            if "episode_task_ids" not in meta:
+                raise ValueError(
+                    "Task-stratified validation requires meta/episode_task_ids. "
+                    "Rebuild the Zarr dataset with process_flying_hand_data.py."
+                )
+            episode_task_ids = np.asarray(meta["episode_task_ids"])
+            if len(episode_task_ids) != self.replay_buffer.n_episodes:
+                raise ValueError(
+                    "meta/episode_task_ids must contain one id per episode: "
+                    f"got {len(episode_task_ids)} ids for "
+                    f"{self.replay_buffer.n_episodes} episodes"
+                )
+            val_mask = get_task_stratified_val_mask(
+                episode_task_ids=episode_task_ids,
+                val_ratio=val_ratio,
+                seed=seed,
+            )
+        else:
+            val_mask = get_val_mask(
+                n_episodes=self.replay_buffer.n_episodes,
+                val_ratio=val_ratio,
+                seed=seed,
+            )
         train_mask = ~val_mask
         train_mask = downsample_mask(mask=train_mask, max_n=max_train_episodes, seed=seed)
 
@@ -106,9 +132,11 @@ class RobotImageDataset(BaseImageDataset):
         data = {"obs": {"agent_pos": sample[self.state_key].astype(np.float32)}}
         for image_key, obs_key in zip(self.image_keys, self.image_obs_keys):
             image = sample[image_key]
-            # DP Zarr data is normally NCHW; accept legacy NHWC stores too.
-            if image.ndim == 4 and image.shape[-1] == 3:
-                image = np.moveaxis(image, -1, 1)
+            if image.ndim != 4 or image.shape[1] != 3:
+                raise ValueError(
+                    f"{image_key} must use current NCHW RGB layout [T,3,H,W], "
+                    f"got {image.shape}"
+                )
             data["obs"][obs_key] = image / 255
         data["action"] = sample[self.action_key].astype(np.float32)
         return data
@@ -137,7 +165,13 @@ class RobotImageDataset(BaseImageDataset):
     def postprocess(self, samples, device):
         obs = {"agent_pos": samples[self.state_key].to(device, non_blocking=True)}
         for image_key, obs_key in zip(self.image_keys, self.image_obs_keys):
-            obs[obs_key] = samples[image_key].to(device, non_blocking=True) / 255.0
+            image = samples[image_key]
+            if image.ndim != 5 or image.shape[2] != 3:
+                raise ValueError(
+                    f"{image_key} must use current NCHW RGB batch layout "
+                    f"[B,T,3,H,W], got {tuple(image.shape)}"
+                )
+            obs[obs_key] = image.to(device, non_blocking=True) / 255.0
         return {"obs": obs, "action": samples[self.action_key].to(device, non_blocking=True)}
 
 

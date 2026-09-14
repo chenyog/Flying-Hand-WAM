@@ -24,7 +24,7 @@ from constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data  # data functions
 from utils import sample_box_pose, sample_insertion_pose  # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict  # helper functions
-from act_policy import ACTPolicy, CNNMLPPolicy
+from act_policy import ACTPolicy, CNNMLPPolicy, temporal_aggregate_actions
 from visualize_episodes import save_videos
 
 try:
@@ -295,6 +295,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
         ### evaluation loop
         if temporal_agg:
             all_time_actions = torch.zeros([max_timesteps, max_timesteps + num_queries, state_dim]).cuda()
+            all_time_action_valid = torch.zeros(
+                [max_timesteps, max_timesteps + num_queries],
+                dtype=torch.bool,
+                device=all_time_actions.device,
+            )
 
         qpos_history = torch.zeros((1, max_timesteps, state_dim)).cuda()
         image_list = []  # for visualization
@@ -327,14 +332,12 @@ def eval_bc(config, ckpt_name, save_episode=True):
                         all_actions = policy(qpos, curr_image)
                     if temporal_agg:
                         all_time_actions[[t], t:t + num_queries] = all_actions
-                        actions_for_curr_step = all_time_actions[:, t]
-                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = 0.01
-                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = (torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1))
-                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        all_time_action_valid[t, t:t + num_queries] = True
+                        raw_action = temporal_aggregate_actions(
+                            all_time_actions,
+                            all_time_action_valid,
+                            t,
+                        )
                     else:
                         raw_action = all_actions[:, t % query_frequency]
                 elif config["policy_class"] == "CNNMLP":

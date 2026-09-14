@@ -13,9 +13,18 @@ from diffusion_policy.env_runner.dp_runner import DPRunner
 
 class DP:
 
-    def __init__(self, ckpt_file: str, n_obs_steps, n_action_steps, device="cuda:0"):
+    def __init__(self, ckpt_file: str, n_obs_steps=None, n_action_steps=None, device="cuda:0"):
         self.policy = self.get_policy(ckpt_file, None, device)
-        self.runner = DPRunner(n_obs_steps=n_obs_steps, n_action_steps=n_action_steps)
+        if n_obs_steps is None:
+            n_obs_steps = int(self.checkpoint_cfg.n_obs_steps)
+        if n_action_steps is None:
+            n_action_steps = int(self.checkpoint_cfg.n_action_steps)
+        self.n_obs_steps = int(n_obs_steps)
+        self.n_action_steps = int(n_action_steps)
+        self.runner = DPRunner(
+            n_obs_steps=self.n_obs_steps,
+            n_action_steps=self.n_action_steps,
+        )
 
     def update_obs(self, observation):
         self.runner.update_obs(observation)
@@ -34,6 +43,7 @@ class DP:
         # load checkpoint
         payload = torch.load(open(checkpoint, "rb"), pickle_module=dill)
         cfg = payload["cfg"]
+        self.checkpoint_cfg = cfg
         cls = hydra.utils.get_class(cfg._target_)
         workspace = cls(cfg, output_dir=output_dir)
         workspace: RobotWorkspace

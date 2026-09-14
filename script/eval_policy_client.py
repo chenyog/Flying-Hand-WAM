@@ -20,6 +20,12 @@ import argparse
 import pdb
 
 from generate_episode_instructions import *
+from script.eval_policy import (
+    get_eval_video_fps,
+    get_eval_video_sizes,
+    rerender_flying_hand_eval_histories,
+    save_flying_hand_eval_history,
+)
 
 
 import sys
@@ -93,12 +99,13 @@ def json_to_numpy(json_str: str) -> Any:
     
     return json.loads(json_str, object_hook=object_hook)
 
-def class_decorator(task_name):
+def class_decorator(task_name, task_namespace=None):
+    module_name = f"{task_namespace}/{task_name}" if task_namespace else task_name
     try:
-        env_class = load_task_class(task_name)
+        env_class = load_task_class(module_name)
         env_instance = env_class()
-    except:
-        raise SystemExit("No Task")
+    except (AttributeError, ImportError, ModuleNotFoundError) as exc:
+        raise SystemExit(f"No such task: {module_name}") from exc
     return env_instance
 
 
@@ -236,6 +243,10 @@ def main(usr_args):
     save_dir = None
     video_save_dir = None
     video_size = None
+    video_sizes = {}
+    eval_video_fps = None
+    replay_dir = None
+    video_dir = None
 
     policy_conda_env = usr_args.get("policy_conda_env", None)
 
@@ -296,10 +307,18 @@ def main(usr_args):
         save_dir = Path(eval_output_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    is_flying_hand = "flying-hand" in embodiment_type
     if args["eval_video_log"]:
-        video_save_dir = save_dir
-        camera_config = get_camera_config(args["camera"]["head_camera_type"])
-        video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
+        if is_flying_hand:
+            video_sizes = get_eval_video_sizes(args)
+            eval_video_fps = get_eval_video_fps(args)
+            replay_dir = save_dir / "replay"
+            video_dir = save_dir / "video"
+            video_save_dir = replay_dir
+        else:
+            video_save_dir = save_dir
+            camera_config = get_camera_config(args["camera"]["head_camera_type"])
+            video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
         video_save_dir.mkdir(parents=True, exist_ok=True)
         args["eval_video_save_dir"] = video_save_dir
 
@@ -326,7 +345,9 @@ def main(usr_args):
     print("\033[94mEmbodiment Config:\033[0m " + embodiment_name)
     print("\n==================================")
 
-    TASK_ENV = class_decorator(args["task_name"])
+    task_namespace = "flying_hand" if is_flying_hand else None
+    TASK_ENV = class_decorator(args["task_name"], task_namespace=task_namespace)
+    args["task_namespace"] = task_namespace
     args["policy_name"] = policy_name
     usr_args["left_arm_dim"] = len(args["left_embodiment_config"]["arm_joints_name"][0])
     usr_args["right_arm_dim"] = len(args["right_embodiment_config"]["arm_joints_name"][1])
@@ -347,6 +368,8 @@ def main(usr_args):
                                    st_seed,
                                    test_num=test_num,
                                    video_size=video_size,
+                                   video_sizes=video_sizes,
+                                   eval_video_fps=eval_video_fps,
                                    instruction_type=instruction_type,
                                    policy_conda_env=policy_conda_env)
     suc_nums.append(suc_num)
@@ -360,6 +383,12 @@ def main(usr_args):
         # file.write(str(task_reward) + '\n')
         file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
 
+    if is_flying_hand and args["eval_video_log"]:
+        model.close()
+        print(f"Evaluation complete; rendering all histories from {replay_dir}")
+        rendered = rerender_flying_hand_eval_histories(replay_dir, video_dir)
+        print(f"Rendered {rendered} complete episode(s) to {video_dir}")
+
     print(f"Data has been saved to {file_path}")
     # return task_reward
 
@@ -371,6 +400,8 @@ def eval_policy(task_name,
                 st_seed,
                 test_num=100,
                 video_size=None,
+                video_sizes=None,
+                eval_video_fps=None,
                 instruction_type=None,
                 policy_conda_env=None):
     print(f"\033[34mTask Name: {args['task_name']}\033[0m")
@@ -433,11 +464,30 @@ def eval_policy(task_name,
 
         TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
         episode_info_list = [episode_info["info"]]
-        results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
-        instruction = np.random.choice(results[0][instruction_type])
+        results = generate_episode_descriptions(
+            args["task_name"],
+            episode_info_list,
+            test_num,
+            instruction_namespace=args.get("task_namespace"),
+        )
+        # Match training data: use the first generated instruction for the
+        # episode instead of randomly sampling a paraphrase at evaluation time.
+        instruction = results[0][instruction_type][0]
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
-        if TASK_ENV.eval_video_path is not None:
+        is_flying_hand = "flying-hand" in args.get("embodiment", [])
+        record_episode_history = is_flying_hand and TASK_ENV.eval_video_path is not None
+        live_episode_video = not is_flying_hand and TASK_ENV.eval_video_path is not None
+        if record_episode_history:
+            TASK_ENV.record_flying_hand_eval_history = True
+            TASK_ENV.flying_hand_eval_action_chunks = []
+            TASK_ENV.flying_hand_eval_actual_states = [
+                np.asarray(TASK_ENV._get_flying_hand_actual_state(), dtype=np.float32)
+            ]
+            TASK_ENV.flying_hand_eval_target_states = [
+                np.asarray(TASK_ENV._get_flying_hand_target_state(), dtype=np.float32)
+            ]
+        if live_episode_video:
             ffmpeg = subprocess.Popen(
                 [
                     "ffmpeg",
@@ -475,8 +525,23 @@ def eval_policy(task_name,
                 succ = True
                 break
         # task_total_reward += TASK_ENV.episode_score
-        if TASK_ENV.eval_video_path is not None:
+        if live_episode_video:
             TASK_ENV._del_eval_video_ffmpeg()
+
+        if record_episode_history:
+            history_path = save_flying_hand_eval_history(
+                TASK_ENV,
+                task_name=task_name,
+                task_config=args["task_config"],
+                episode=TASK_ENV.test_num,
+                seed=now_seed,
+                instruction=instruction,
+                success=succ,
+                video_sizes=video_sizes,
+                fps=eval_video_fps,
+            )
+            TASK_ENV.record_flying_hand_eval_history = False
+            print(f"Saved 20 Hz replay history: {history_path}")
 
         if succ:
             TASK_ENV.suc += 1
