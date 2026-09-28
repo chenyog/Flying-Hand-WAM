@@ -8,11 +8,13 @@ import torchvision.transforms as transforms
 
 try:
     from detr.main import (
+        build_ACT_model_for_inference,
         build_ACT_model_and_optimizer,
         build_CNNMLP_model_and_optimizer,
     )
 except:
     from .detr.main import (
+        build_ACT_model_for_inference,
         build_ACT_model_and_optimizer,
         build_CNNMLP_model_and_optimizer,
     )
@@ -25,11 +27,21 @@ class ACTPolicy(nn.Module):
 
     def __init__(self, args_override, RoboTwin_Config=None):
         super().__init__()
-        model, optimizer = build_ACT_model_and_optimizer(args_override, RoboTwin_Config)
+        if RoboTwin_Config is None:
+            model, optimizer = build_ACT_model_and_optimizer(args_override)
+        else:
+            # Deployment never updates weights. Building an AdamW optimizer here
+            # made lr/weight_decay look like evaluation controls even though they
+            # cannot affect inference, and allocated optimizer-only Python state.
+            model = build_ACT_model_for_inference(RoboTwin_Config)
+            optimizer = None
         self.model = model  # CVAE decoder
         self.optimizer = optimizer
-        self.kl_weight = args_override["kl_weight"]
-        print(f"KL Weight {self.kl_weight}")
+        # kl_weight is a training loss coefficient. Keep it internal for the
+        # training call path instead of exposing it in deploy_policy.yml.
+        self.kl_weight = float(args_override.get("kl_weight", 0.0))
+        if RoboTwin_Config is None:
+            print(f"KL Weight {self.kl_weight}")
 
     def __call__(self, qpos, image, actions=None, is_pad=None):
         env_state = None

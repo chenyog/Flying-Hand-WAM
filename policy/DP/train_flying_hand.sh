@@ -13,30 +13,34 @@ Options:
   --all-tasks          Explicitly select the all-task mode (default behavior)
   --dataset-dir PATH   Raw dataset dir containing data/episode*.hdf5; repeat for multiple datasets
   --run-name NAME      Optional run-name prefix; a UTC timestamp is always appended
-  --gpus IDS           GPU ids, for example 0 or 0,1,2,3 (default: 0)
+  --gpus IDS           GPU ids (default: 0,1,2,3,4,5,6,7)
   --seed N             Training seed (default: 0)
-  --epochs N           Full-dataloader epochs (default: 8000, official image recipe)
-  --batch-size N       Batch size per GPU (default: 64 divided by GPU count)
+  --epochs N           Full-dataloader epochs (default: 1000)
+  --batch-size N       Batch size per GPU (default: 96)
+  --wandb-mode MODE    W&B mode: online, offline, or disabled (default: WANDB_MODE or online)
   --force-convert      Rebuild the Zarr dataset even when it already exists
+  --resume-state PATH  Restore a full checkpoints/latest.ckpt
   -h, --help           Show this help
 
 Examples:
   train_flying_hand.sh --gpus 0,1,2,3
   train_flying_hand.sh --dataset-dir /data/set_a --dataset-dir /data/set_b --gpus 0,1
 
-The official Diffusion Policy image recipe uses global batch 64. An explicit
---batch-size is still per GPU, so global batch is batch-size times GPU count.
+An explicit --batch-size is per GPU, so global batch is batch-size times GPU
+count. The 8-GPU Flying-Hand throughput default is 96 x 8 = 768.
 EOF
 }
 
-GPU_IDS="0"
+GPU_IDS="0,1,2,3,4,5,6,7"
 SEED="0"
-EPOCHS="8000"
+EPOCHS="1000"
 BATCH_SIZE=""
 FORCE_CONVERT=0
+RESUME_STATE=""
 DATASET_DIRS=()
 RUN_NAME_OVERRIDE=""
 ALL_TASKS_EXPLICIT=0
+WANDB_MODE_VALUE="${WANDB_MODE:-online}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -74,10 +78,18 @@ while [[ $# -gt 0 ]]; do
       BATCH_SIZE="$2"
       shift 2
       ;;
+    --wandb-mode)
+      [[ $# -ge 2 ]] || { echo "--wandb-mode requires a value" >&2; exit 2; }
+      WANDB_MODE_VALUE="$2"
+      shift 2
+      ;;
     --force-convert)
       FORCE_CONVERT=1
       shift
       ;;
+    --resume-state)
+      [[ $# -ge 2 ]] || { echo "--resume-state requires a path" >&2; exit 2; }
+      RESUME_STATE="$2"; shift 2 ;;
     -h|--help)
       usage
       exit 0
@@ -102,6 +114,10 @@ if [[ ! "${GPU_IDS}" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
   echo "--gpus must be a comma-separated list, for example 0,1,2,3" >&2
   exit 2
 fi
+if [[ ! "${WANDB_MODE_VALUE}" =~ ^(online|offline|disabled)$ ]]; then
+  echo "--wandb-mode must be online, offline, or disabled" >&2
+  exit 2
+fi
 if ! [[ "${EPOCHS}" =~ ^[1-9][0-9]*$ ]] || \
    { [[ -n "${BATCH_SIZE}" ]] && ! [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; }; then
   echo "epochs and batch-size must be positive integers" >&2
@@ -122,10 +138,10 @@ if [[ ! -x "${TORCHRUN_BIN}" ]]; then
 fi
 IFS=',' read -r -a GPU_ARRAY <<< "${GPU_IDS}"
 GPU_COUNT="${#GPU_ARRAY[@]}"
-REFERENCE_GLOBAL_BATCH_SIZE=64
+REFERENCE_GLOBAL_BATCH_SIZE=768
 if [[ -z "${BATCH_SIZE}" ]]; then
   if (( REFERENCE_GLOBAL_BATCH_SIZE % GPU_COUNT != 0 )); then
-    echo "Cannot divide official global batch 64 across ${GPU_COUNT} GPUs; pass --batch-size explicitly" >&2
+    echo "Cannot divide Flying-Hand global batch 768 across ${GPU_COUNT} GPUs; pass --batch-size explicitly" >&2
     exit 2
   fi
   BATCH_SIZE=$((REFERENCE_GLOBAL_BATCH_SIZE / GPU_COUNT))
@@ -182,6 +198,7 @@ cd "${PROJECT_ROOT}"
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 if (( FORCE_CONVERT == 1 )) || ! zarr_complete; then
   "${PYTHON_BIN}" process_flying_hand_data.py "${CONVERT_ARGS[@]}"
@@ -202,11 +219,16 @@ TRAIN_ARGS=(
   training.num_epochs="${EPOCHS}"
   training.resume=False
   exp_name="${RUN_ID}"
+  logging.mode="${WANDB_MODE_VALUE}"
+  logging.name="${RUN_ID}"
   hydra.run.dir="data/outputs/${RUN_ID}"
   hydra.output_subdir=null
 )
 
-echo "[launch] run_id=${RUN_ID} output_dir=${PROJECT_ROOT}/data/outputs/${RUN_ID} datasets=${#DATASET_DIRS[@]} per_gpu_batch=${BATCH_SIZE} global_batch=${GLOBAL_BATCH_SIZE}"
+echo "[launch] run_id=${RUN_ID} output_dir=${PROJECT_ROOT}/data/outputs/${RUN_ID} datasets=${#DATASET_DIRS[@]} per_gpu_batch=${BATCH_SIZE} global_batch=${GLOBAL_BATCH_SIZE} wandb_mode=${WANDB_MODE_VALUE}"
+if [[ -n "$RESUME_STATE" ]]; then
+  TRAIN_ARGS+=("training.resume_from=$RESUME_STATE")
+fi
 
 if (( GPU_COUNT == 1 )); then
   "${PYTHON_BIN}" train.py "${TRAIN_ARGS[@]}" training.device=cuda:0

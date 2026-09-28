@@ -223,6 +223,10 @@ def create_data_loader(
         def data_config(self) -> _config.DataConfig:
             return self._data_config
 
+        def __len__(self):
+            """Number of complete global batches in one dataset pass."""
+            return len(self._data_loader.torch_loader)
+
         def __iter__(self):
             for batch in self._data_loader:
                 yield _model.Observation.from_dict(batch), batch["actions"]

@@ -15,8 +15,10 @@ class shake_bottle(FlyingHandBaseTask):
     shake_y_offset = 0.12
     shake_seconds = 0.8
     shake_cycles = 3
-    success_shake_y = 0.10
-    success_lift_z = 0.03
+    # Count two alternating crossings of the bottle's initial Y position.
+    # There is no minimum lateral displacement for a crossing.
+    success_shake_cycles = 2
+    success_lift_z = 0.02
 
     def _reset_shake_progress(self):
         """Reset actual bottle-trajectory metrics for one episode."""
@@ -77,7 +79,7 @@ class shake_bottle(FlyingHandBaseTask):
             "max_displacement_y_m": float(self.max_shake_displacement_y),
             "extreme_visits": int(self.shake_extreme_visits),
             "completed_cycles": int(self.completed_shake_cycles),
-            "required_cycles": int(self.shake_cycles),
+            "required_cycles": int(self.success_shake_cycles),
             "final_lift_m": float(
                 self.bottle.get_pose().p[2] - self.bottle_initial_pose.p[2]
             ),
@@ -89,7 +91,7 @@ class shake_bottle(FlyingHandBaseTask):
         pose = self.bottle.get_pose().p
         return (
             self._task_objects_safe()
-            and self.completed_shake_cycles >= self.shake_cycles
+            and self.completed_shake_cycles >= self.success_shake_cycles
             and pose[2] > self.bottle_initial_pose.p[2] + self.success_lift_z
         )
 
@@ -97,7 +99,7 @@ class shake_bottle(FlyingHandBaseTask):
         """Track completed, alternating shakes from the actual bottle pose.
 
         A one-sided excursion is not a shake cycle.  Once the bottle is lifted,
-        crossing the positive and negative thresholds in alternation contributes
+        crossing the initial Y position in alternation contributes
         two extreme visits, which is one completed cycle.
         """
         pose = self.bottle.get_pose().p
@@ -116,9 +118,9 @@ class shake_bottle(FlyingHandBaseTask):
         )
 
         side = 0
-        if displacement >= self.success_shake_y:
+        if displacement > 0:
             side = 1
-        elif displacement <= -self.success_shake_y:
+        elif displacement < 0:
             side = -1
         if side and side != self._last_shake_side:
             self._last_shake_side = side

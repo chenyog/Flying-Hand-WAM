@@ -5,7 +5,7 @@ from unittest import mock
 
 import torch
 
-from policy.ACT.act_policy import temporal_aggregate_actions
+from policy.ACT.act_policy import ACTPolicy, temporal_aggregate_actions
 from policy.ACT.deploy_policy import (
     _checkpoint_chunk_size,
     _is_flying_hand_deployment,
@@ -14,6 +14,25 @@ from policy.ACT.deploy_policy import (
 
 
 class FlyingHandPolicyChunkTest(unittest.TestCase):
+    def test_act_deployment_builds_no_optimizer(self):
+        model = torch.nn.Identity()
+        with (
+            mock.patch(
+                "policy.ACT.act_policy.build_ACT_model_for_inference",
+                return_value=model,
+            ) as build_inference,
+            mock.patch(
+                "policy.ACT.act_policy.build_ACT_model_and_optimizer",
+            ) as build_training,
+        ):
+            policy = ACTPolicy({}, object())
+
+        self.assertIs(policy.model, model)
+        self.assertIsNone(policy.optimizer)
+        self.assertEqual(policy.kl_weight, 0.0)
+        build_inference.assert_called_once()
+        build_training.assert_not_called()
+
     def test_act_uses_explicit_robot_type_instead_of_task_name(self):
         self.assertTrue(_is_flying_hand_deployment({"robot_type": "flying_hand"}))
         self.assertTrue(_is_flying_hand_deployment({"robot_type": "flying-hand"}))

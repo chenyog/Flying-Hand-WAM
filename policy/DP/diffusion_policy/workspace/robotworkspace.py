@@ -80,15 +80,41 @@ class RobotWorkspace(BaseWorkspace):
                 self.model = wrapped_model
         return super().save_checkpoint(path=path, *args, **kwargs)
 
+    def _init_wandb(self, cfg):
+        """Create the sole rank-0 W&B run for this training job."""
+        if not self.is_main_process or str(cfg.logging.mode) == "disabled":
+            return None
+        try:
+            import wandb
+        except ImportError as exc:
+            raise ImportError(
+                "W&B logging is enabled; install the DP dependencies or set "
+                "logging.mode=disabled."
+            ) from exc
+        run = wandb.init(
+            dir=str(self.output_dir),
+            config=OmegaConf.to_container(cfg, resolve=True),
+            **OmegaConf.to_container(cfg.logging, resolve=True),
+        )
+        run.config.update({"output_dir": str(self.output_dir)})
+        return run
+
     def run(self):
         cfg = copy.deepcopy(self.cfg)
+        if int(cfg.training.checkpoint_every) < 0:
+            raise ValueError("checkpoint_every must be non-negative")
+        resume_payload = None
 
         # resume training
-        if cfg.training.resume:
-            lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+        if cfg.training.resume or cfg.training.get("resume_from"):
+            lastest_ckpt_path = pathlib.Path(cfg.training.get("resume_from") or
+                                            self.get_checkpoint_path())
+            if not lastest_ckpt_path.is_file():
+                raise FileNotFoundError(lastest_ckpt_path)
+            print(f"Resuming from checkpoint {lastest_ckpt_path}")
+            resume_payload = self.load_checkpoint(path=lastest_ckpt_path, include_keys=self.include_keys)
+            if "optimizer" not in resume_payload["state_dicts"]:
+                raise ValueError("Inference weights cannot resume training; use checkpoints/latest.ckpt")
 
         # configure dataset
         dataset: BaseImageDataset
@@ -101,9 +127,10 @@ class RobotWorkspace(BaseWorkspace):
         val_dataset = dataset.get_validation_dataset()
         val_dataloader = create_dataloader(val_dataset, **cfg.val_dataloader)
 
-        self.model.set_normalizer(normalizer)
-        if cfg.training.use_ema:
-            self.ema_model.set_normalizer(normalizer)
+        if resume_payload is None:
+            self.model.set_normalizer(normalizer)
+            if cfg.training.use_ema:
+                self.ema_model.set_normalizer(normalizer)
 
         # Compute the scheduler horizon from the effective number of batches.
         # This also remains correct when a debug/config override caps an epoch.
@@ -137,6 +164,19 @@ class RobotWorkspace(BaseWorkspace):
         ema: EMAModel = None
         if cfg.training.use_ema:
             ema = hydra.utils.instantiate(cfg.ema, model=self.ema_model)
+        resume_extra = resume_payload.get("resume_extra") if resume_payload else None
+        if resume_extra:
+            lr_scheduler.load_state_dict(resume_extra["scheduler"])
+            for group, lr in zip(self.optimizer.param_groups, lr_scheduler.get_last_lr()):
+                group["lr"] = lr
+            if ema is not None:
+                ema.optimization_step = resume_extra["ema_step"]
+            for name, loader in (("train", train_dataloader), ("val", val_dataloader)):
+                sampler = loader.sampler
+                sampler = getattr(sampler, "batch_sampler", sampler)
+                saved_rng = resume_extra.get("samplers", {}).get(name)
+                if sampler.rng is not None and saved_rng is not None:
+                    sampler.rng.bit_generator.state = saved_rng
 
         # configure env
         # env_runner: BaseImageRunner
@@ -146,17 +186,9 @@ class RobotWorkspace(BaseWorkspace):
         # assert isinstance(env_runner, BaseImageRunner)
         env_runner = None
 
-        # configure logging
-        # wandb_run = wandb.init(
-        #     dir=str(self.output_dir),
-        #     config=OmegaConf.to_container(cfg, resolve=True),
-        #     **cfg.logging
-        # )
-        # wandb.config.update(
-        #     {
-        #         "output_dir": self.output_dir,
-        #     }
-        # )
+        # W&B owns one run per training job.  Non-main DDP ranks never import,
+        # initialize, or write to W&B.
+        wandb_run = self._init_wandb(cfg)
 
         # configure checkpoint
         topk_manager = TopKCheckpointManager(save_dir=os.path.join(self.output_dir, "checkpoints"),
@@ -201,7 +233,22 @@ class RobotWorkspace(BaseWorkspace):
         # append to the JSON log; concurrent appenders would corrupt JSONL.
         logger_context = JsonLogger(log_path) if self.is_main_process else contextlib.nullcontext(NullJsonLogger())
         with logger_context as json_logger:
-            for local_epoch_idx in range(cfg.training.num_epochs):
+            if resume_extra:
+                states = resume_extra["rng"]
+                rank = dist.get_rank() if self.distributed else 0
+                if len(states) != (dist.get_world_size() if self.distributed else 1):
+                    raise ValueError("Resume requires the same process count")
+                rng = states[rank]
+                random.setstate(rng["python"])
+                np.random.set_state(rng["numpy"])
+                torch.set_rng_state(rng["torch"].cpu())
+                if torch.cuda.is_available():
+                    torch.cuda.set_rng_state(rng["cuda"].cpu())
+                for name, parameter in self._model_module().named_parameters():
+                    grad = resume_extra.get("gradients", {}).get(name)
+                    if grad is not None:
+                        parameter.grad = grad.to(device)
+            for local_epoch_idx in range(self.epoch, cfg.training.num_epochs):
                 step_log = dict()
                 # ========= train for this epoch ==========
                 if cfg.training.freeze_encoder:
@@ -253,6 +300,8 @@ class RobotWorkspace(BaseWorkspace):
                         if not is_last_batch:
                             # log of last step is combined with validation and rollout
                             json_logger.log(step_log)
+                            if wandb_run is not None:
+                                wandb_run.log(step_log, step=self.global_step)
                             self.global_step += 1
 
                         if (cfg.training.max_train_steps
@@ -334,7 +383,10 @@ class RobotWorkspace(BaseWorkspace):
                         del mse
 
                 # checkpoint
-                if self.is_main_process and ((self.epoch + 1) % cfg.training.checkpoint_every) == 0:
+                if self.is_main_process and (
+                        (cfg.training.checkpoint_every > 0 and
+                         (self.epoch + 1) % cfg.training.checkpoint_every == 0)
+                        or self.epoch + 1 == cfg.training.num_epochs):
                     # Keep periodic checkpoints inside the timestamped Hydra
                     # output directory so independent runs cannot overwrite
                     # one another.
@@ -345,6 +397,8 @@ class RobotWorkspace(BaseWorkspace):
                     self.save_checkpoint(
                         periodic_ckpt_path,
                         use_thread=False,
+                        exclude_keys=("optimizer",),
+                        include_keys=(),
                     )
                     if cfg.checkpoint.topk.monitor_key in step_log:
                         metric_dict = {
@@ -354,7 +408,8 @@ class RobotWorkspace(BaseWorkspace):
                         metric_dict["epoch"] = self.epoch + 1
                         topk_ckpt_path = topk_manager.get_ckpt_path(metric_dict)
                         if topk_ckpt_path is not None:
-                            self.save_checkpoint(path=topk_ckpt_path, use_thread=False)
+                            self.save_checkpoint(path=topk_ckpt_path, use_thread=False,
+                                                 exclude_keys=("optimizer",), include_keys=())
 
                 if self.distributed:
                     dist.barrier(device_ids=[device.index])
@@ -365,8 +420,46 @@ class RobotWorkspace(BaseWorkspace):
                 # end of epoch
                 # log of last step is combined with validation and rollout
                 json_logger.log(step_log)
+                if wandb_run is not None:
+                    wandb_run.log(step_log, step=self.global_step)
                 self.global_step += 1
                 self.epoch += 1
+                state_every = int(cfg.training.checkpoint_every)
+                if ((state_every > 0 and self.epoch % state_every == 0)
+                        or self.epoch == cfg.training.num_epochs):
+                    rng = {"python": random.getstate(), "numpy": np.random.get_state(),
+                           "torch": torch.get_rng_state(),
+                           "cuda": torch.cuda.get_rng_state() if torch.cuda.is_available() else None}
+                    rng_states = [None] * (dist.get_world_size() if self.distributed else 1)
+                    if self.distributed:
+                        dist.all_gather_object(rng_states, rng)
+                    else:
+                        rng_states[0] = rng
+                    if self.is_main_process:
+                        target = self.get_checkpoint_path()
+                        staging = target.with_suffix(".incomplete")
+                        self.save_checkpoint(staging, use_thread=False)
+                        import dill
+                        payload = torch.load(staging, pickle_module=dill, map_location="cpu")
+                        payload["resume_extra"] = {
+                            "scheduler": lr_scheduler.state_dict(),
+                            "ema_step": ema.optimization_step if ema is not None else 0,
+                            "rng": rng_states,
+                            "gradients": {name: p.grad.detach().cpu() for name, p in
+                                          self._model_module().named_parameters() if p.grad is not None},
+                        }
+                        payload["resume_extra"]["samplers"] = {}
+                        for name, loader in (("train", train_dataloader), ("val", val_dataloader)):
+                            sampler = getattr(loader.sampler, "batch_sampler", loader.sampler)
+                            payload["resume_extra"]["samplers"][name] = (
+                                sampler.rng.bit_generator.state if sampler.rng is not None else None)
+                        torch.save(payload, staging, pickle_module=dill)
+                        os.replace(staging, target)
+                    if self.distributed:
+                        dist.barrier()
+
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 class BatchSampler:

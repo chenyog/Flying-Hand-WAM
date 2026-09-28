@@ -65,7 +65,8 @@ class RLDSBatchTransform:
         # Get action chunk string
         current_action_string = self.action_tokenizer(current_action)
         action_chunk_string = current_action_string + future_actions_string
-        action_chunk_len = len(action_chunk_string)
+        # One action token per scalar; decoded text length is not a token count.
+        action_chunk_len = actions.size
 
         conversation = [
             {"from": "human", "value": f"What action should the robot take to {lang}?"},

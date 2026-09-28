@@ -1,4 +1,6 @@
 models/
+!/policy/openvla-oft/prismatic/models/
+!/policy/openvla-oft/prismatic/models/**
 data/*
 !data/process_stuck.py
 __pycache__/

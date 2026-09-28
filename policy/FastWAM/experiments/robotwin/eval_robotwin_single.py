@@ -184,11 +184,6 @@ def main(cfg: DictConfig):
     _append_override(overrides, "rand_device", cfg.EVALUATION.rand_device)
     _append_override(overrides, "tiled", cfg.EVALUATION.tiled)
     _append_override(overrides, "timing_enabled", cfg.EVALUATION.timing_enabled)
-    _append_override(
-        overrides,
-        "skip_get_obs_within_replan",
-        cfg.EVALUATION.skip_get_obs_within_replan,
-    )
 
     cmd = [
         sys.executable,

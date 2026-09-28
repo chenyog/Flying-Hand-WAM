@@ -11,16 +11,12 @@ class place_can_basket(FlyingHandBaseTask):
     pre_grasp_z_offset = 0.10
     grasp_z_offset = 0.02
     pull_out_z_offset = 0.16
-    # Center the carried can over the basket opening before restoring PhysX.
-    # The previous (+40 mm x, -40 mm y) release bias overlapped the rim and
-    # generated a large outward separation impulse on some basket variants.
     open_gripper_y_offset = 0.0
     place_pre_z_offset = 0.26
     place_z_offset = 0.16
     grasp_to_place_seconds = 2.4
     place_descent_seconds = 0.8
     post_release_settle_seconds = 0.5
-    isolated_release_z_offset = 0.0
     can_qpos = [0.707225, 0.706849, -0.0100455, -0.00982061]
     basket_qpos = [0.5, 0.5, 0.5, 0.5]
 
@@ -34,10 +30,6 @@ class place_can_basket(FlyingHandBaseTask):
         self.can = self._create_board_actor(self.can_name, self.can_id, int(can_slot), mass=0.1, qpos=self.can_qpos)
         self.basket = self._create_board_actor(self.basket_name, self.basket_id, int(basket_slot), mass=0.8, qpos=self.basket_qpos)
         self.graspable_actors = [self.can]
-        self.can_initial_orientation = np.asarray(
-            self.can.get_pose().q,
-            dtype=float,
-        ).copy()
         self.can_start_z = self.can.get_pose().p[2]
         self.basket_start_z = self.basket.get_pose().p[2]
         self.add_prohibit_area(self.can, padding=0.16)
@@ -85,22 +77,8 @@ class place_can_basket(FlyingHandBaseTask):
             carried_actor=self.can,
             carried_pose=carried_pose,
         )
-        isolated_target = place * carried_pose
-        basket_bounds = self._get_actor_world_bounds(self.basket)
-        basket_center = 0.5 * (basket_bounds[0] + basket_bounds[1])
-        isolated_position = np.asarray(isolated_target.p, dtype=float)
-        isolated_position[:2] = basket_center[:2]
-        # Grasp contact can yaw/tilt an isolated can enough to enlarge its
-        # horizontal footprint. Restore the upright spawn orientation before
-        # enabling collision against the basket rim.
-        isolated_target = type(isolated_target)(
-            (
-                isolated_position
-                + [0.0, 0.0, self.isolated_release_z_offset]
-            ).tolist(),
-            self.can_initial_orientation.tolist(),
-        )
-        planner.set_isolated_carried_actor_target(self, self.can, isolated_target)
+        # Release at the pose reached by carrying; do not reposition or
+        # reorient the can independently of the hand trajectory.
         motion.set_gripper(place, "open")
         motion.move(
             [place, place_pre],
@@ -125,4 +103,5 @@ class place_can_basket(FlyingHandBaseTask):
             and np.linalg.norm(can_p[:2] - basket_p[:2]) < 0.16
             and bounds[0][2] - 0.02 < can_p[2] < bounds[1][2] + 0.10
             and basket_p[2] > self.basket_start_z - 0.03
+            and not self.is_grasping
         )

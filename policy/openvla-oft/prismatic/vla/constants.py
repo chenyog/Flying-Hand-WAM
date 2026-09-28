@@ -4,6 +4,7 @@ Important constants for VLA training and evaluation.
 Attempts to automatically identify the correct constants to set based on the Python command used to launch
 training or evaluation. If it is unclear, defaults to using the LIBERO simulation benchmark constants.
 """
+import os
 import sys
 from enum import Enum
 
@@ -44,12 +45,26 @@ BRIDGE_CONSTANTS = {
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
 }
 
+FLYING_HAND_CONSTANTS = {
+    "NUM_ACTIONS_CHUNK": 8,  # 8 consecutive commands at 20 Hz: 0.4 seconds
+    "ACTION_DIM": 5,  # absolute x, y, z, yaw, grasp
+    "PROPRIO_DIM": 5,
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
+}
+
 
 # Function to detect robot platform from command line arguments
 def detect_robot_platform():
+    explicit = os.environ.get("OPENVLA_ROBOT_PLATFORM", "").upper()
+    if explicit:
+        if explicit not in {"LIBERO", "ALOHA", "BRIDGE", "FLYING_HAND"}:
+            raise ValueError(f"Unknown OPENVLA_ROBOT_PLATFORM: {explicit}")
+        return explicit
     cmd_args = " ".join(sys.argv).lower()
 
-    if "libero" in cmd_args:
+    if "flying_hand" in cmd_args:
+        return "FLYING_HAND"
+    elif "libero" in cmd_args:
         return "LIBERO"
     elif "aloha" in cmd_args:
         return "ALOHA"
@@ -70,6 +85,8 @@ elif ROBOT_PLATFORM == "ALOHA":
     constants = ALOHA_CONSTANTS
 elif ROBOT_PLATFORM == "BRIDGE":
     constants = BRIDGE_CONSTANTS
+elif ROBOT_PLATFORM == "FLYING_HAND":
+    constants = FLYING_HAND_CONSTANTS
 
 # Assign constants to global variables
 NUM_ACTIONS_CHUNK = constants["NUM_ACTIONS_CHUNK"]

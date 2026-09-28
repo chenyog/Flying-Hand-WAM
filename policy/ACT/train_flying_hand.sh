@@ -13,32 +13,42 @@ Options:
   --all-tasks          Explicitly select the all-task mode (default behavior)
   --dataset-dir PATH   Raw dataset dir containing data/episode*.hdf5; repeat for multiple datasets
   --run-name NAME      Optional run-name prefix; a UTC timestamp is always appended
-  --gpus IDS           GPU ids, e.g. 0 or 0,1,2,3 (default: 0)
+  --gpus IDS           GPU ids (default: 0,1,2,3,4,5,6,7)
   --seed N             Training seed (default: 0)
-  --epochs N           Number of training epochs (default: 6000)
-  --batch-size N       Batch size per GPU (default: 8)
+  --epochs N           Number of training epochs (default: 5000)
+  --start-epoch N       First epoch for weight-only continuation (default: 0)
+  --init-checkpoint P   Load ACT model weights before training (not optimizer state)
+  --init-stats P        Reuse normalization stats from the same prior run
+  --resume-state P      Restore state/latest.pt (model, optimizer, stats, epoch)
+  --batch-size N       Batch size per GPU (default: 64; global 512 on 8 GPUs)
   --num-workers N      DataLoader workers per train/val loader and GPU (default: 1)
   --convert-workers N  Parallel workers for episode conversion (default: 32)
+  --wandb-mode MODE    W&B mode: online, offline, or disabled (default: WANDB_MODE or online)
   --force-convert      Rebuild the merged ACT dataset
   -h, --help           Show this help
 
 Examples:
   ./train_flying_hand.sh --gpus 0
-  ./train_flying_hand.sh --gpus 0,1,2,3 --epochs 6000 --batch-size 8
+  ./train_flying_hand.sh --gpus 0,1,2,3 --epochs 5000 --batch-size 8
   ./train_flying_hand.sh --dataset-dir /data/set_a --dataset-dir /data/set_b --gpus 0,1
 EOF
 }
 
-GPU_IDS="0"
+GPU_IDS="0,1,2,3,4,5,6,7"
 SEED="0"
-EPOCHS="6000"
-BATCH_SIZE="8"
+EPOCHS="5000"
+START_EPOCH="0"
+INIT_CHECKPOINT=""
+INIT_STATS=""
+RESUME_STATE=""
+BATCH_SIZE="64"
 NUM_WORKERS="1"
 CONVERT_WORKERS="32"
 FORCE_CONVERT=0
 DATASET_DIRS=()
 RUN_NAME_OVERRIDE=""
 ALL_TASKS_EXPLICIT=0
+WANDB_MODE_VALUE="${WANDB_MODE:-online}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,6 +68,18 @@ while [[ $# -gt 0 ]]; do
         --epochs)
             [[ $# -ge 2 ]] || { echo "--epochs requires a value" >&2; exit 2; }
             EPOCHS="$2"; shift 2 ;;
+        --start-epoch)
+            [[ $# -ge 2 ]] || { echo "--start-epoch requires a value" >&2; exit 2; }
+            START_EPOCH="$2"; shift 2 ;;
+        --init-checkpoint)
+            [[ $# -ge 2 ]] || { echo "--init-checkpoint requires a path" >&2; exit 2; }
+            INIT_CHECKPOINT="$2"; shift 2 ;;
+        --init-stats)
+            [[ $# -ge 2 ]] || { echo "--init-stats requires a path" >&2; exit 2; }
+            INIT_STATS="$2"; shift 2 ;;
+        --resume-state)
+            [[ $# -ge 2 ]] || { echo "--resume-state requires a path" >&2; exit 2; }
+            RESUME_STATE="$2"; shift 2 ;;
         --batch-size)
             [[ $# -ge 2 ]] || { echo "--batch-size requires a value" >&2; exit 2; }
             BATCH_SIZE="$2"; shift 2 ;;
@@ -67,6 +89,9 @@ while [[ $# -gt 0 ]]; do
         --convert-workers)
             [[ $# -ge 2 ]] || { echo "--convert-workers requires a value" >&2; exit 2; }
             CONVERT_WORKERS="$2"; shift 2 ;;
+        --wandb-mode)
+            [[ $# -ge 2 ]] || { echo "--wandb-mode requires a value" >&2; exit 2; }
+            WANDB_MODE_VALUE="$2"; shift 2 ;;
         --force-convert) FORCE_CONVERT=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
@@ -81,10 +106,30 @@ if [[ ! "$GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
     echo "--gpus must be comma-separated integers" >&2
     exit 2
 fi
-if ! [[ "$SEED" =~ ^[0-9]+$ ]] || ! [[ "$EPOCHS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || \
+if [[ ! "$WANDB_MODE_VALUE" =~ ^(online|offline|disabled)$ ]]; then
+    echo "--wandb-mode must be online, offline, or disabled" >&2
+    exit 2
+fi
+if ! [[ "$SEED" =~ ^[0-9]+$ ]] || ! [[ "$EPOCHS" =~ ^[1-9][0-9]*$ ]] || ! [[ "$START_EPOCH" =~ ^[0-9]+$ ]] || ! [[ "$BATCH_SIZE" =~ ^[1-9][0-9]*$ ]] || \
    ! [[ "$NUM_WORKERS" =~ ^[0-9]+$ ]] || ! [[ "$CONVERT_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
     echo "seed must be non-negative; epochs/batch-size/convert-workers must be positive; num-workers may be zero" >&2
     exit 2
+fi
+if (( START_EPOCH >= EPOCHS )); then
+    echo "--start-epoch must be smaller than --epochs" >&2
+    exit 2
+fi
+if [[ -n "$RESUME_STATE" ]]; then
+    [[ -f "$RESUME_STATE" ]] || { echo "State not found: $RESUME_STATE" >&2; exit 1; }
+    [[ -z "$INIT_CHECKPOINT" ]] || { echo "Cannot combine --resume-state and --init-checkpoint" >&2; exit 2; }
+fi
+if (( START_EPOCH > 0 )) && [[ -z "$INIT_CHECKPOINT" ]]; then
+    echo "--start-epoch requires --init-checkpoint" >&2
+    exit 2
+fi
+if [[ -n "$INIT_CHECKPOINT" ]]; then
+    [[ -f "$INIT_CHECKPOINT" ]] || { echo "Checkpoint not found: $INIT_CHECKPOINT" >&2; exit 1; }
+    [[ -f "$INIT_STATS" ]] || { echo "Normalization stats not found: $INIT_STATS" >&2; exit 1; }
 fi
 if [[ -n "${RUN_NAME_OVERRIDE}" ]] && [[ ! "${RUN_NAME_OVERRIDE}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "--run-name may contain only letters, digits, dot, underscore, and hyphen" >&2
@@ -103,6 +148,7 @@ TORCHRUN_BIN="${REPO_ROOT}/.venv/bin/torchrun"
 [[ -x "${TORCHRUN_BIN}" ]] || TORCHRUN_BIN=torchrun
 export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
 export CUDA_VISIBLE_DEVICES="$GPU_IDS"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 IFS=',' read -r -a GPU_ARRAY <<< "$GPU_IDS"
 GPU_COUNT=${#GPU_ARRAY[@]}
 cd "$PROJECT_ROOT"
@@ -170,13 +216,22 @@ TRAIN_ARGS=(
     --num_workers "$NUM_WORKERS"
     --dim_feedforward 3200
     --num_epochs "$EPOCHS"
+    --start-epoch "$START_EPOCH"
     --lr 1e-5
     --save_freq 2000
     --state_dim 5
     --seed "$SEED"
+    --wandb-mode "$WANDB_MODE_VALUE"
+    --wandb-name "$RUN_ID"
 )
+if [[ -n "$INIT_CHECKPOINT" ]]; then
+    TRAIN_ARGS+=(--init-checkpoint "$INIT_CHECKPOINT" --init-stats "$INIT_STATS")
+fi
+if [[ -n "$RESUME_STATE" ]]; then
+    TRAIN_ARGS+=(--resume-state "$RESUME_STATE")
+fi
 
-echo "[launch] run_id=${RUN_ID} checkpoint_dir=${PROJECT_ROOT}/${CKPT_DIR#./} datasets=${#DATASET_DIRS[@]}"
+echo "[launch] run_id=${RUN_ID} checkpoint_dir=${PROJECT_ROOT}/${CKPT_DIR#./} datasets=${#DATASET_DIRS[@]} wandb_mode=${WANDB_MODE_VALUE}"
 
 if (( GPU_COUNT > 1 )); then
     "$TORCHRUN_BIN" --standalone --nproc_per_node="$GPU_COUNT" imitate_episodes.py "${TRAIN_ARGS[@]}"

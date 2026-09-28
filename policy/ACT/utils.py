@@ -159,7 +159,7 @@ def get_norm_stats(dataset_dir, num_episodes):
 
 def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
               distributed=False, rank=0, world_size=1, num_workers=1,
-              action_horizon=None):
+              action_horizon=None, pretrained_norm_stats=None):
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
     print(f"\nData from: {dataset_dir}\n")
@@ -170,7 +170,13 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     val_indices = shuffled_indices[int(train_ratio * num_episodes):]
 
     # obtain normalization stats for qpos and action
-    norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+    if pretrained_norm_stats is None:
+        norm_stats, max_action_len = get_norm_stats(dataset_dir, num_episodes)
+    else:
+        if action_horizon is None:
+            raise ValueError("action_horizon is required with pretrained_norm_stats")
+        norm_stats = pretrained_norm_stats
+        max_action_len = int(action_horizon)
 
     # construct dataset and dataloader
     train_dataset = EpisodicDataset(

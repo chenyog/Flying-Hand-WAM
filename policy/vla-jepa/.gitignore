@@ -1,0 +1,52 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environments and packaging output
+.venv/
+venv/
+env/
+.tox/
+.nox/
+*.egg-info/
+*.egg
+.eggs/
+/build/
+/dist/
+
+# Training and evaluation artifacts
+*.log
+*.log.*
+logs/
+wandb/
+runs/
+outputs/
+checkpoints/
+eval_results/
+events.out.tfevents.*
+
+# Download/runtime caches and temporary files
+.cache/
+*.tmp
+*.temp
+*.part
+*.incomplete
+*.swp
+*.swo
+*~
+
+# Local credentials and editor/OS files
+.env
+.env.*
+!.env.example
+!.env.template
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -93,6 +93,32 @@ class FlyingHandEvalContractTest(unittest.TestCase):
         self.assertEqual(fastwam["EVALUATION"]["instruction_type"], "seen")
         self.assertEqual(fastwam["EVALUATION"]["replan_steps"], 24)
 
+    def test_eval_configs_do_not_expose_noop_parameters(self):
+        dp = yaml.safe_load(
+            (PROJECT_ROOT / "policy/DP/deploy_policy.yml").read_text()
+        )
+        self.assertNotIn("head_camera_type", dp)
+
+        act = yaml.safe_load(
+            (PROJECT_ROOT / "policy/ACT/deploy_policy.yml").read_text()
+        )
+        for key in (
+            "policy_class",
+            "num_epochs",
+            "kl_weight",
+            "lr",
+            "lr_backbone",
+            "weight_decay",
+        ):
+            self.assertNotIn(key, act)
+
+        for name in ("sim_flying_hand.yaml", "sim_robotwin.yaml"):
+            fastwam = yaml.safe_load(
+                (PROJECT_ROOT / "policy/FastWAM/configs" / name).read_text()
+            )
+            self.assertNotIn("skip_get_obs_within_replan", fastwam["EVALUATION"])
+            self.assertNotIn("enabled", fastwam["MULTIRUN"])
+
     def test_eval_histories_are_rendered_in_one_full_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

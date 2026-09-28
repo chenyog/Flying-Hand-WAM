@@ -22,9 +22,10 @@ log_every: 10
 # Persistent model-weight checkpoint interval. All interval checkpoints are kept.
 # Set to 0 to disable periodic weight checkpoints (the final one is still saved).
 save_every: 100
-# Exact-resume state interval. Only the newest complete state directory is kept.
+# Independent exact-resume state interval (does not follow save_every).
+# Only the newest complete state directory is kept.
 # Set to 0 to disable periodic state snapshots (the final one is still saved).
-state_save_every: ${save_every}
+state_save_every: 100
 eval_every: 50
 eval_num_inference_steps: 10
 
@@ -38,7 +39,7 @@ resume: null
 
 # wandb
 wandb:
-  enabled: false
+  enabled: true
   workspace: null
   project: fast-wam
   name: train

@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from dataclasses import dataclass
 
@@ -15,20 +14,30 @@ from experiments.robot.openvla_utils import (
 @dataclass
 class InferenceConfig:
     pretrained_checkpoint: str
+    base_model_path: str | None = None
     use_l1_regression: bool = True
     use_diffusion: bool = False
-    use_film: bool = True
+    use_film: bool = False
     use_proprio: bool = True
     load_in_8bit: bool = False
     load_in_4bit: bool = False
-    num_images_in_input: int = 3
-    center_crop: bool = True
+    num_images_in_input: int = 2
+    center_crop: bool = False
     unnorm_key: str = ""
     num_open_loop_steps: int = NUM_ACTIONS_CHUNK
     lora_rank: int = 32
 
 
 def encode_obs(obs: dict) -> dict:
+    from envs.flying_hand.eval_control import is_flying_hand_observation
+
+    if is_flying_hand_observation(obs):
+        return {
+            "full_image": obs["observation"]["head_camera"]["rgb"],
+            "wrist_image": obs["observation"]["wrist_camera"]["rgb"],
+            "state": np.asarray(obs["flying_hand"]["actual_state"], dtype=np.float32),
+            "instruction": obs["language"],
+        }
     return {
         "full_image": obs["observation"]["head_camera"]["rgb"],
         "left_wrist_image": obs["observation"]["left_camera"]["rgb"],
@@ -51,6 +60,9 @@ class Model:
             self.proprio_projector = get_proprio_projector(
                 cfg, self.vla.llm_dim, PROPRIO_DIM
             )
+        from envs.flying_hand.eval_control import reset_execution_state
+
+        reset_execution_state(self)
 
     def get_action(self, observation: dict):
         obs = encode_obs(observation)
@@ -70,14 +82,15 @@ class Model:
 def get_model(usr_args: dict):
     config_args = {
         "pretrained_checkpoint": usr_args["checkpoint_path"],
+        "base_model_path": usr_args.get("base_model_path"),
         "use_l1_regression": usr_args.get("use_l1_regression", True),
         "use_diffusion": usr_args.get("use_diffusion", False),
-        "use_film": usr_args.get("use_film", True),
+        "use_film": usr_args.get("use_film", False),
         "use_proprio": usr_args.get("use_proprio", True),
         "load_in_8bit": usr_args.get("load_in_8bit", False),
         "load_in_4bit": usr_args.get("load_in_4bit", False),
-        "num_images_in_input": usr_args.get("num_images_in_input", 3),
-        "center_crop": usr_args.get("center_crop", True),
+        "num_images_in_input": usr_args.get("num_images_in_input", 2),
+        "center_crop": usr_args.get("center_crop", False),
         "unnorm_key": usr_args["unnorm_key"],
         "num_open_loop_steps": usr_args.get("num_open_loop_steps", NUM_ACTIONS_CHUNK),
         "lora_rank": usr_args.get("lora_rank", 32),
@@ -88,14 +101,20 @@ def get_model(usr_args: dict):
 
 
 def reset_model(model=None):
-    pass
+    from envs.flying_hand.eval_control import reset_execution_state
+
+    reset_execution_state(model)
 
 
 def eval(TASK_ENV, model: Model, observation: dict):
     observation["language"] = TASK_ENV.get_instruction()
 
     actions = model.get_action(observation)
+    from envs.flying_hand.eval_control import execute_action_chunk, is_flying_hand_observation
+
+    if is_flying_hand_observation(observation):
+        execute_action_chunk(TASK_ENV, model, actions[: model.cfg.num_open_loop_steps])
+        return
     for action in actions:
         TASK_ENV.take_action(action)
         observation = TASK_ENV.get_obs()
-

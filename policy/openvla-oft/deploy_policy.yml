@@ -4,19 +4,20 @@ task_name: null
 task_config: null
 ckpt_setting: null
 seed: null
-instruction_type: unseen
+instruction_type: seen
 policy_conda_env: null
 
 # Policy-related arguments
 checkpoint_path: null
+base_model_path: /data/Flying-Hand-WAM/policy/openvla-oft/checkpoints/openvla-7b
 use_l1_regression: true
 use_diffusion: false
-use_film: true
+use_film: false
 use_proprio: true
 load_in_8bit: false
 load_in_4bit: false
-center_crop: true
-num_images_in_input: 3
+center_crop: false
+num_images_in_input: 2
 unnorm_key: null
-num_open_loop_steps: 25
+num_open_loop_steps: 8
 lora_rank: 32

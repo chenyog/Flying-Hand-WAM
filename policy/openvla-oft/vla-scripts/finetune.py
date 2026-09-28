@@ -59,12 +59,15 @@ from prismatic.training.train_utils import (
     get_next_actions_mask,
 )
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
+import json
+from prismatic.util.training_state import save_state as save_resume_state, load_state as load_resume_state
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.vla.constants import (
     ACTION_DIM,
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
+    ROBOT_PLATFORM,
 )
 from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
@@ -83,6 +86,7 @@ class FinetuneConfig:
     dataset_name: str = "aloha_scoop_x_into_bowl"    # Name of fine-tuning dataset (e.g., `aloha_scoop_x_into_bowl`)
     run_root_dir: Path = Path("runs")                # Path to directory to store logs & checkpoints
     shuffle_buffer_size: int = 100_000               # Dataloader shuffle buffer size (can reduce if OOM errors occur)
+    dataset_backend: str = "rlds"                    # rlds or flying_hand_lerobot (local v2.1 Parquet)
 
     # Algorithm and architecture
     use_l1_regression: bool = True                   # If True, trains continuous action head with L1 regression objective
@@ -103,6 +107,7 @@ class FinetuneConfig:
     val_freq: int = 10_000                           # (When `use_val_set==True`) Validation set logging frequency in steps
     val_time_limit: int = 180                        # (When `use_val_set==True`) Time limit for computing validation metrics
     save_freq: int = 10_000                          # Checkpoint saving frequency in steps
+    resume_state: Optional[str] = None              # New full state/latest.pt; do not combine with resume=True
     save_latest_checkpoint_only: bool = False        # If True, saves only 1 checkpoint, overwriting latest checkpoint
                                                      #   (If False, saves all checkpoints)
     resume: bool = False                             # If True, resumes from checkpoint
@@ -120,7 +125,7 @@ class FinetuneConfig:
                                                      #         False and merge final checkpoint offline!
 
     # Logging
-    wandb_entity: str = "your-wandb-entity"          # Name of WandB entity
+    wandb_entity: Optional[str] = None               # Defaults to the authenticated W&B account
     wandb_project: str = "your-wandb-project"        # Name of WandB project
     run_id_note: Optional[str] = None                # Extra note to add to end of run ID for logging
     run_id_override: Optional[str] = None            # Optional string to override the run ID with
@@ -812,14 +817,7 @@ def save_training_checkpoint(
         processor.save_pretrained(checkpoint_dir)
         vla.module.save_pretrained(adapter_dir)
 
-        # Save base model, optimizer, scheduler
-        torch.save(
-            {
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-            },
-            checkpoint_dir / "training_state.pt",
-        )
+        # Optimizer/scheduler live only in the independent latest resume state.
 
         # Save additional modules
         if cfg.use_proprio and proprio_projector is not None:
@@ -980,6 +978,15 @@ def finetune(cfg: FinetuneConfig) -> None:
     assert not (
         cfg.use_l1_regression and cfg.use_diffusion
     ), "Cannot do both L1 regression and diffusion. Please pick one of them!"
+    if cfg.dataset_backend not in {"rlds", "flying_hand_lerobot"}:
+        raise ValueError(f"Unknown dataset backend: {cfg.dataset_backend}")
+    if cfg.dataset_backend == "flying_hand_lerobot":
+        if ROBOT_PLATFORM != "FLYING_HAND" or (ACTION_DIM, PROPRIO_DIM, NUM_ACTIONS_CHUNK) != (5, 5, 8):
+            raise ValueError("Set OPENVLA_ROBOT_PLATFORM=FLYING_HAND before launching Python")
+        if cfg.dataset_name != "flying_hand_direct_all_tasks" or cfg.num_images_in_input != 2 or not cfg.use_proprio:
+            raise ValueError("Flying-Hand requires flying_hand_direct_all_tasks, two cameras and proprio")
+        if cfg.image_aug or cfg.use_val_set:
+            raise ValueError("Flying-Hand direct reader currently requires image_aug=False and use_val_set=False")
 
     # Trim trailing forward slash ('/') in VLA path if it exists
     cfg.vla_path = cfg.vla_path.rstrip("/")
@@ -1208,7 +1215,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     if cfg.resume:
         train_state_path = Path(cfg.vla_path) / "training_state.pt"
         if not train_state_path.exists():
-            print(f"[Warning] no training_state.pt")
+            raise ValueError("Inference-only checkpoint cannot resume optimizer; use --resume_state state/latest.pt")
         else:
             print(f"[Resume] Loading optimizer/scheduler from: {train_state_path}")
             ckpt = torch.load(train_state_path, map_location="cpu")
@@ -1255,14 +1262,22 @@ def finetune(cfg: FinetuneConfig) -> None:
         use_wrist_image=use_wrist_image,
         use_proprio=cfg.use_proprio,
     )
-    train_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
-        batch_transform,
-        resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
-    )
+    if cfg.dataset_backend == "flying_hand_lerobot":
+        from prismatic.vla.datasets.flying_hand import FlyingHandDataset
+
+        train_dataset = FlyingHandDataset(
+            cfg.data_root_dir, batch_transform, chunk_size=NUM_ACTIONS_CHUNK,
+            rank=distributed_state.process_index, world_size=distributed_state.num_processes,
+        )
+    else:
+        train_dataset = RLDSDataset(
+            cfg.data_root_dir,
+            cfg.dataset_name,
+            batch_transform,
+            resize_resolution=tuple(vla.module.config.image_sizes),
+            shuffle_buffer_size=cfg.shuffle_buffer_size,
+            image_aug=cfg.image_aug,
+        )
     if cfg.use_val_set:
         val_dataset = RLDSDataset(
             cfg.data_root_dir,
@@ -1310,8 +1325,29 @@ def finetune(cfg: FinetuneConfig) -> None:
         "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
     }
 
-    # Start training
-    with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
+    resume_modules = {
+        "vla": vla,
+        "action_head": action_head if (cfg.use_l1_regression or cfg.use_diffusion) else None,
+        "proprio_projector": proprio_projector if cfg.use_proprio else None,
+        "noisy_action_projector": noisy_action_projector if cfg.use_diffusion else None,
+    }
+    start_step = int(cfg.resume_step or 0) if cfg.resume else 0
+    if cfg.resume_state:
+        if cfg.resume:
+            raise ValueError("Use resume_state or legacy resume, not both")
+        start_step, saved_stats = load_resume_state(
+            cfg.resume_state, resume_modules, optimizer, scheduler)
+        # The data transform has already been built from the selected dataset.
+        # Reject changed normalization rather than silently training at a new scale.
+        if json.dumps(saved_stats, sort_keys=True, default=lambda x: x.tolist()) != json.dumps(
+                train_dataset.dataset_statistics, sort_keys=True, default=lambda x: x.tolist()):
+            raise ValueError("Dataset normalization differs from resume state")
+    if start_step >= cfg.max_steps:
+        raise ValueError("max_steps must exceed the restored completed step")
+    if cfg.save_freq < 0:
+        raise ValueError("Save intervals must be non-negative")
+    # Start training. Data iterator restarts; optimizer progress does not.
+    with tqdm.tqdm(total=cfg.max_steps, initial=start_step, leave=False) as progress:
         vla.train()
         optimizer.zero_grad()
         for batch_idx, batch in enumerate(dataloader):
@@ -1358,18 +1394,14 @@ def finetune(cfg: FinetuneConfig) -> None:
             smoothened_metrics = compute_smoothened_metrics(recent_metrics)
 
             # Push Metrics to W&B (every wandb_log_freq gradient steps)
-            log_step = (
-                gradient_step_idx
-                if not cfg.resume
-                else cfg.resume_step + gradient_step_idx
-            )
+            log_step = start_step + gradient_step_idx + 1
             if distributed_state.is_main_process and log_step % cfg.wandb_log_freq == 0:
                 log_metrics_to_wandb(smoothened_metrics, "VLA Train", log_step, wandb)
 
             # [If applicable] Linearly warm up learning rate from 10% to 100% of original
-            if cfg.lr_warmup_steps > 0:
+            if cfg.lr_warmup_steps > 0 and log_step <= cfg.lr_warmup_steps:
                 lr_progress = min(
-                    (gradient_step_idx + 1) / cfg.lr_warmup_steps, 1.0
+                    log_step / cfg.lr_warmup_steps, 1.0
                 )  # Cap at 1.0
                 current_lr = original_lr * (0.1 + 0.9 * lr_progress)
                 for param_group in optimizer.param_groups:
@@ -1396,7 +1428,9 @@ def finetune(cfg: FinetuneConfig) -> None:
                 progress.update()
 
             # Save model checkpoint: either keep latest checkpoint only or all checkpoints
-            if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:
+            update_done = (batch_idx + 1) % cfg.grad_accumulation_steps == 0
+            if update_done and ((cfg.save_freq > 0 and log_step % cfg.save_freq == 0)
+                                or log_step == cfg.max_steps):
                 save_training_checkpoint(
                     cfg=cfg,
                     run_dir=run_dir,
@@ -1415,6 +1449,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                     optimizer=optimizer,
                     scheduler=scheduler,
                 )
+
+            if update_done and ((cfg.save_freq > 0 and log_step % cfg.save_freq == 0)
+                                or log_step == cfg.max_steps):
+                save_resume_state(run_dir / "state" / "latest.pt", resume_modules,
+                                  optimizer, scheduler, log_step, train_dataset.dataset_statistics)
 
             # Test model on validation set
             if cfg.use_val_set and log_step > 0 and log_step % cfg.val_freq == 0:
@@ -1438,7 +1477,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 vla.train()
 
             # Stop training when max_steps is reached
-            if log_step == cfg.max_steps:
+            if update_done and log_step >= cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
                 break
 

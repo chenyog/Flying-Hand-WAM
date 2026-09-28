@@ -64,10 +64,10 @@ class BaseWorkspace:
                 payload["pickles"][key] = dill.dumps(value)
         if use_thread:
             self._saving_thread = threading.Thread(
-                target=lambda: torch.save(payload, path.open("wb"), pickle_module=dill))
+                target=lambda: torch.save(payload, str(path), pickle_module=dill))
             self._saving_thread.start()
         else:
-            torch.save(payload, path.open("wb"), pickle_module=dill)
+            torch.save(payload, str(path), pickle_module=dill)
         return str(path.absolute())
 
     def get_checkpoint_path(self, tag="latest"):
@@ -91,7 +91,7 @@ class BaseWorkspace:
             path = self.get_checkpoint_path(tag=tag)
         else:
             path = pathlib.Path(path)
-        payload = torch.load(path.open("rb"), pickle_module=dill, **kwargs)
+        payload = torch.load(str(path), pickle_module=dill, **kwargs)
         self.load_payload(payload, exclude_keys=exclude_keys, include_keys=include_keys)
         return payload
 

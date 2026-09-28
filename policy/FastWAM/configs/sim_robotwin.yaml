@@ -32,14 +32,12 @@ EVALUATION:
   rand_device: cpu
   tiled: false
   timing_enabled: false
-  skip_get_obs_within_replan: true
 
   # Runtime inputs
   dataset_stats_path: null
   device: cuda
 
 MULTIRUN:
-  enabled: false
   num_gpus: 8
   max_tasks_per_gpu: 2
 

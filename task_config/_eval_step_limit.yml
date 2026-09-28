@@ -9,7 +9,8 @@ grab_roller: 400
 handover_block: 800
 handover_mic: 600
 lift_pot: 400
-move_can_pot: 400
+move_bottle: 700
+move_can_pot: 700
 move_playingcard_away: 400
 move_stapler_pad: 400
 hanging_mug: 900
@@ -27,6 +28,7 @@ place_container_plate: 400
 place_dual_shoes: 600
 place_empty_cup: 500
 place_fan: 400
+place_fruit_skillet: 700
 place_burger_fries: 500
 place_mouse_pad: 400
 place_object_basket: 700

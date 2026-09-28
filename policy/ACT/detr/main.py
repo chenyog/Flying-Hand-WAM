@@ -131,7 +131,10 @@ def get_args_parser():
 def build_ACT_model_and_optimizer(args_override, RoboTwin_Config=None):
     if RoboTwin_Config is None:
         parser = argparse.ArgumentParser("DETR training and evaluation script", parents=[get_args_parser()])
-        args = parser.parse_args()
+        # imitate_episodes.py owns the public training CLI (for example W&B
+        # controls).  The DETR builder only needs its model arguments, so do
+        # not reject options that belong to the outer training entrypoint.
+        args, _ = parser.parse_known_args()
         for k, v in args_override.items():
             setattr(args, k, v)
     else:
@@ -157,9 +160,17 @@ def build_ACT_model_and_optimizer(args_override, RoboTwin_Config=None):
     return model, optimizer
 
 
+def build_ACT_model_for_inference(args):
+    """Build only the ACT network; evaluation never needs an optimizer."""
+    print("build_ACT_model_for_inference", args)
+    model = build_ACT_model(args)
+    model.cuda()
+    return model
+
+
 def build_CNNMLP_model_and_optimizer(args_override):
     parser = argparse.ArgumentParser("DETR training and evaluation script", parents=[get_args_parser()])
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     for k, v in args_override.items():
         setattr(args, k, v)

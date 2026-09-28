@@ -150,6 +150,8 @@ accelerate launch \
   --num_processes "${NPROC_PER_NODE}" \
   scripts/train.py \
   "output_dir=./runs/${TASK_BASENAME}/${RUN_ID}" \
+  "wandb.enabled=true" \
+  "wandb.mode=${WANDB_MODE:-online}" \
   "wandb.name=${TASK_BASENAME}_${RUN_ID}" \
   "${DATA_OVERRIDES[@]}" \
   "${EXTRA_ARGS[@]}"

@@ -150,7 +150,7 @@ class FlyingHandDynamics:
             [-c, -c, c, c],
         ], dtype=float)
 
-    def step(self, ref_pose, ref_vel, ref_acc, grasped):
+    def step(self, ref_pose, ref_vel, ref_acc, grasped, external_force_world=None):
         self.ref_pose = ref_pose
         ref_p = np.array(ref_pose.p, dtype=float)
         ref_v = np.array(ref_vel, dtype=float)
@@ -235,7 +235,10 @@ class FlyingHandDynamics:
         self.prev_thrust = thrust
         self.prev_torque = torque.copy()
 
-        self.v += (r @ np.array([0.0, 0.0, thrust]) / self.mass - np.array([0.0, 0.0, G])) * self.dt
+        external_force = np.zeros(3) if external_force_world is None else np.asarray(external_force_world, dtype=float)
+        if external_force.shape != (3,) or not np.isfinite(external_force).all():
+            raise ValueError('External force must be a finite world-frame [3] vector')
+        self.v += ((r @ np.array([0.0, 0.0, thrust]) + external_force) / self.mass - np.array([0.0, 0.0, G])) * self.dt
         self.p += self.v * self.dt
         self.w += self.j_inv @ (torque - np.cross(self.w, self.j @ self.w)) * self.dt
         self.q = _qmul(self.q, np.r_[1.0, 0.5 * self.w * self.dt])

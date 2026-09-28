@@ -262,25 +262,23 @@ def get_vla(cfg: Any) -> torch.nn.Module:
     """
     print("Instantiating pretrained VLA policy...")
 
-    # If loading a locally stored pretrained checkpoint, check whether config or model files
-    # need to be synced so that any changes the user makes to the VLA modeling code will
-    # actually go into effect
-    # If loading a pretrained checkpoint from Hugging Face Hub, we just assume that the policy
-    # will be used as is, with its original modeling logic
-    if not model_is_on_hf_hub(cfg.pretrained_checkpoint):
+    # Local checkpoints use the repository's registered OpenVLA classes.
+    # Evaluation must remain read-only, so it never rewrites model files in the
+    # base checkpoint (which is especially important for multi-process eval).
+    model_checkpoint = getattr(cfg, "base_model_path", None) or cfg.pretrained_checkpoint
+    if not model_is_on_hf_hub(model_checkpoint):
         # Register OpenVLA model to HF Auto Classes (not needed if the model is on HF Hub)
         AutoConfig.register("openvla", OpenVLAConfig)
         AutoImageProcessor.register(OpenVLAConfig, PrismaticImageProcessor)
         AutoProcessor.register(OpenVLAConfig, PrismaticProcessor)
         AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction)
 
-        # Update config.json and sync model files
-        update_auto_map(cfg.pretrained_checkpoint)
-        check_model_logic_mismatch(cfg.pretrained_checkpoint)
-
-    # Load the model
+    # Flying-Hand training stores the LoRA adapter and task-specific heads in
+    # the run checkpoint, while the 7B base weights remain in their own local
+    # directory.  Load both explicitly instead of treating the adapter
+    # directory as a complete Hugging Face checkpoint.
     vla = AutoModelForVision2Seq.from_pretrained(
-        cfg.pretrained_checkpoint,
+        model_checkpoint,
         # attn_implementation="flash_attention_2",
         torch_dtype=torch.bfloat16,
         load_in_8bit=cfg.load_in_8bit,
@@ -288,6 +286,14 @@ def get_vla(cfg: Any) -> torch.nn.Module:
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+    adapter_dir = os.path.join(cfg.pretrained_checkpoint, "lora_adapter")
+    if model_checkpoint != cfg.pretrained_checkpoint:
+        if not os.path.isdir(adapter_dir):
+            raise FileNotFoundError(f"LoRA adapter not found: {adapter_dir}")
+        from peft import PeftModel
+
+        vla = PeftModel.from_pretrained(vla, adapter_dir, is_trainable=False)
+        vla = vla.merge_and_unload()
 
     # If using FiLM, wrap the vision backbone to allow for infusion of language inputs
     if cfg.use_film:

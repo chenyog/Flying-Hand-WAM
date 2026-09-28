@@ -139,7 +139,8 @@ class PaddedCollatorForActionPrediction:
         # Stack proprio
         if "proprio" in instances[0]:
             proprio = [instance["proprio"] for instance in instances]
-            proprio = torch.Tensor(np.squeeze(np.stack(proprio)))
+            # Preserve the batch axis even for batch_size=1.
+            proprio = torch.as_tensor(np.stack(proprio), dtype=torch.float32).reshape(len(instances), -1)
         else:
             proprio = None
 

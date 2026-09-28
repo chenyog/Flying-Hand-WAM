@@ -30,6 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "pyarrow>=14",  # Local Flying-Hand LeRobot v2.1 Parquet reader
     "accelerate>=0.25.0",
     "draccus==0.8.0",
     "einops",
@@ -48,12 +49,13 @@ dependencies = [
     "torchvision==0.17.0",
     "torchaudio==2.2.0",
     "transformers @ git+https://github.com/moojink/transformers-openvla-oft.git",  # IMPORTANT: Use this fork for bidirectional attn (for parallel decoding)
-    "wandb",
+    "wandb==0.19.1",
     "tensorflow==2.15.0",
     "tensorflow_datasets==4.9.3",
+    "tensorflow-metadata==1.15.0",
     "tensorflow_graphics==2021.12.3",
     "dlimp @ git+https://github.com/moojink/dlimp_openvla",
-    "diffusers",
+    "diffusers==0.33.1",
     "imageio",
     "uvicorn",
     "fastapi",

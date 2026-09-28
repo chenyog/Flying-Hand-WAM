@@ -5,7 +5,9 @@ defaults:
   - override /model: fastwam
   - _self_
 
-batch_size: 8
+# Per-device microbatch selected by measured end-to-end throughput on eight
+# GPUs: global 152 reaches 11.15 samples/s, versus 10.45 at global 144.
+batch_size: 19
 num_workers: 8
 
 model:
@@ -15,10 +17,12 @@ lr_scheduler_type: "cosine"
 learning_rate: 1e-4
 num_epochs: 10
 max_steps: null
-log_every: 10
-save_every: 500
-eval_every: 100
+log_every: 8
+# Rounded sample-equivalent intervals relative to the former effective global
+# batch 128 (8 devices x batch 8 x accumulation 2).
+save_every: 420
+eval_every: 84
 
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 1
 weight_decay: 1e-2
 resume: null

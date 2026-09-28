@@ -22,6 +22,17 @@ class move_can_pot(FlyingHandBaseTask):
     can_qpos = [0.707225, 0.706849, -0.0100455, -0.00982061]
     pot_qpos = [0, 0, 0, 1]
 
+    def _choose_can_slot(self):
+        """Start on another shelf; the goal remains beside the pot's shelf."""
+        pot_z = self.board_slots[self.pot_slot_id][1]
+        candidates = [
+            i for i, (_, z) in enumerate(self.board_slots)
+            if i != self.pot_slot_id and not np.isclose(z, pot_z)
+        ]
+        if not candidates:
+            raise ValueError("move_can_pot requires at least two distinct shelf heights")
+        return int(np.random.choice(candidates))
+
     def load_actors(self):
         self._reset_board_slots()
         self.can_name = "071_can"
@@ -29,8 +40,7 @@ class move_can_pot(FlyingHandBaseTask):
         self.can_id = int(np.random.choice([0, 1, 2, 3, 5, 6]))
         self.pot_id = int(np.random.randint(0, 7))
         self.pot_slot_id = int(np.random.choice(len(self.board_slots)))
-        same_slot = np.random.rand() < 0.5
-        self.can_slot_id = self.pot_slot_id if same_slot else int(np.random.choice([i for i in range(len(self.board_slots)) if i != self.pot_slot_id]))
+        self.can_slot_id = self._choose_can_slot()
         self.pot = create_sapien_urdf_obj(
             scene=self.scene,
             pose=sapien.Pose([self._board_front_x() - self.shelf_length / 2, *self.board_slots[self.pot_slot_id]], self.pot_qpos),
@@ -39,7 +49,8 @@ class move_can_pot(FlyingHandBaseTask):
             fix_root_link=True,
         )
         model_dir = sorted(p for p in Path(f"assets/objects/{self.pot_name}").iterdir() if p.is_dir() and p.name != "visual")[self.pot_id]
-        bbox = json.load(open(model_dir / "bounding_box.json", "r", encoding="utf-8"))
+        with open(model_dir / "bounding_box.json", "r", encoding="utf-8") as stream:
+            bbox = json.load(stream)
         self.pot.config["center"] = ((np.array(bbox["min"]) + np.array(bbox["max"])) / 2).tolist()
         self.add_task_objects(self.pot)
         self.can = self._create_board_actor(self.can_name, self.can_id, self.can_slot_id, mass=0.1, qpos=self.can_qpos)
@@ -56,17 +67,12 @@ class move_can_pot(FlyingHandBaseTask):
         pot_y_max = shelf_y + self.shelf_width / 2 - pot_half[1]
         sides = []
         for side in [-1, 1]:
-            lo = max(pot_y_min, can_y_min - side * offset, can_y_min + side * offset if same_slot else pot_y_min)
-            hi = min(pot_y_max, can_y_max - side * offset, can_y_max + side * offset if same_slot else pot_y_max)
+            lo = max(pot_y_min, can_y_min - side * offset)
+            hi = min(pot_y_max, can_y_max - side * offset)
             if lo <= hi:
                 sides.append((side, lo, hi))
-        if not sides and same_slot:
-            self.can_slot_id = int(np.random.choice([i for i in range(len(self.board_slots)) if i != self.pot_slot_id]))
-            sides = [
-                (side, max(pot_y_min, can_y_min - side * offset), min(pot_y_max, can_y_max - side * offset))
-                for side in [-1, 1]
-                if max(pot_y_min, can_y_min - side * offset) <= min(pot_y_max, can_y_max - side * offset)
-            ]
+        if not sides:
+            raise ValueError("No shelf space for the pot and the can's target with the required gap")
         side, lo, hi = sides[np.random.randint(len(sides))]
         pot_y = np.random.uniform(lo, hi)
         self.target_center = np.array([
@@ -75,12 +81,9 @@ class move_can_pot(FlyingHandBaseTask):
             self.board_slots[self.pot_slot_id][1] + (self._get_actor_world_bounds(self.can)[1][2] - self._get_actor_world_bounds(self.can)[0][2]) / 2,
         ])
         self._place_actor_on_shelf(self.pot, self.pot_slot_id, y=pot_y)
-        if self.can_slot_id == self.pot_slot_id:
-            self._place_actor_on_shelf(self.can, self.can_slot_id, y=pot_y - side * offset)
-        else:
-            y_min = self.board_slots[self.can_slot_id][0] - self.shelf_width / 2 + can_half[1]
-            y_max = self.board_slots[self.can_slot_id][0] + self.shelf_width / 2 - can_half[1]
-            self._place_actor_on_shelf(self.can, self.can_slot_id, y=np.random.uniform(y_min, y_max))
+        y_min = self.board_slots[self.can_slot_id][0] - self.shelf_width / 2 + can_half[1]
+        y_max = self.board_slots[self.can_slot_id][0] + self.shelf_width / 2 - can_half[1]
+        self._place_actor_on_shelf(self.can, self.can_slot_id, y=np.random.uniform(y_min, y_max))
         self.add_prohibit_area(self.pot, padding=0.06)
         self.add_prohibit_area(self.can, padding=0.08)
         self.shelf_xy_areas[self.pot_slot_id].append((self.target_center[0], self.target_center[1], max(can_half) + 0.08))

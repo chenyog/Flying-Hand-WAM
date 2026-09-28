@@ -68,54 +68,12 @@ def _environment(actor):
 
 
 class FlyingHandGraspValidationTest(unittest.TestCase):
-    def test_blocks_ranking_policy_filter_climbs_before_horizontal_approach(self):
-        block = _Actor("green block", [0.70, 0.0, 1.00])
-        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
-        env.blocks = [block]
-        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
-        target = sapien.Pose([0.60, 0.0, 0.90])
-        current = sapien.Pose([0.10, -0.20, 0.80])
+    def test_ranking_tasks_have_no_oracle_target_filter(self):
+        from envs.flying_hand.blocks_ranking_size import blocks_ranking_size
 
-        filtered, diagnostic = env.filter_flying_hand_policy_target(
-            target,
-            current,
-        )
-
-        np.testing.assert_allclose(filtered.p[:2], current.p[:2])
-        self.assertAlmostEqual(filtered.p[2], 1.045)
-        self.assertTrue(diagnostic["vertical_first"])
-        self.assertEqual(diagnostic["actor"], "green block")
-
-    def test_blocks_ranking_policy_filter_preserves_safe_target(self):
-        block = _Actor("green block", [0.70, 0.0, 1.00])
-        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
-        env.blocks = [block]
-        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
-        target = sapien.Pose([0.60, 0.0, 1.12])
-
-        filtered, diagnostic = env.filter_flying_hand_policy_target(
-            target,
-            sapien.Pose([0.50, 0.0, 1.10]),
-        )
-
-        np.testing.assert_allclose(filtered.p, target.p)
-        self.assertIsNone(diagnostic)
-
-    def test_blocks_ranking_policy_filter_protects_neighbor_while_carrying(self):
-        carried = _Actor("green block", [0.70, 0.0, 1.00])
-        neighbor = _Actor("blue block", [0.70, 0.28, 1.09])
-        env = blocks_ranking_rgb.__new__(blocks_ranking_rgb)
-        env.blocks = [carried, neighbor]
-        env.flying_hand_config = {"root": {"u_center_offset": [0.0, 0.0, 0.0]}}
-
-        filtered, diagnostic = env.filter_flying_hand_policy_target(
-            sapien.Pose([0.60, 0.02, 0.90]),
-            sapien.Pose([0.10, -0.20, 0.80]),
-            carried_actor=carried,
-        )
-
-        self.assertAlmostEqual(filtered.p[2], 1.135, places=6)
-        self.assertEqual(diagnostic["actor"], "blue block")
+        for task_type in (blocks_ranking_rgb, blocks_ranking_size):
+            self.assertFalse(hasattr(task_type, "filter_flying_hand_policy_target"))
+            self.assertFalse(hasattr(task_type, "policy_block_clearance_enabled"))
 
     def test_expert_isolated_carry_rejects_invalid_box_center(self):
         actor = _Actor("knocked block", [0.10, 0.20, -0.04])

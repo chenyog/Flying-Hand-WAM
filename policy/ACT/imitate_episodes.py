@@ -6,6 +6,7 @@ os.environ["MUJOCO_GL"] = "egl"
 import torch
 import numpy as np
 import pickle
+from training_state import atomic_save, capture_rng, restore_rng
 import argparse
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
@@ -46,13 +47,14 @@ def setup_distributed():
     """Initialize torchrun state, while keeping ordinary single-GPU use unchanged."""
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     distributed = world_size > 1
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank if distributed else 0)
     if distributed and not dist.is_initialized():
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         dist.init_process_group(backend=backend, init_method="env://")
     rank = dist.get_rank() if distributed else 0
-    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank if distributed else 0)
         device = torch.device("cuda", local_rank if distributed else 0)
     else:
         device = torch.device("cpu")
@@ -81,6 +83,15 @@ def main(args):
     batch_size_val = args["batch_size"]
     num_workers = args["num_workers"]
     num_epochs = args["num_epochs"]
+    start_epoch = args["start_epoch"]
+    if args["save_freq"] < 0:
+        raise ValueError("Save intervals must be non-negative")
+    if not 0 <= start_epoch < num_epochs:
+        raise ValueError("--start-epoch must be in [0, --num_epochs)")
+    if start_epoch and not args["init_checkpoint"] and not args["resume_state"]:
+        raise ValueError("--start-epoch requires --init-checkpoint")
+    if args["init_checkpoint"] and not args["init_stats"]:
+        raise ValueError("--init-checkpoint requires --init-stats to preserve input normalization")
 
     # get task parameters
     is_sim = task_name[:4] == "sim-"
@@ -151,6 +162,12 @@ def main(args):
         "rank": rank,
         "world_size": world_size,
         "device": device,
+        "wandb_project": args["wandb_project"],
+        "wandb_name": args["wandb_name"],
+        "wandb_mode": args["wandb_mode"],
+        "init_checkpoint": args["init_checkpoint"],
+        "resume_state": args["resume_state"],
+        "start_epoch": start_epoch,
     }
 
     if is_eval:
@@ -167,15 +184,30 @@ def main(args):
         print()
         exit()
 
+    pretrained_norm_stats = None
+    resume_state = None
+    if args["resume_state"]:
+        if args["init_checkpoint"]:
+            raise ValueError("Use either --resume-state or --init-checkpoint, not both")
+        resume_state = torch.load(args["resume_state"], map_location="cpu", weights_only=False)
+        if "optimizer" not in resume_state:
+            raise ValueError("--resume-state requires a full training state, not model weights")
+        pretrained_norm_stats = resume_state["dataset_stats"]
+    if args["init_stats"] and resume_state is None:
+        with open(args["init_stats"], "rb") as stream:
+            pretrained_norm_stats = pickle.load(stream)
     train_dataloader, val_dataloader, stats, _ = load_data(
         dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val,
         distributed=distributed, rank=rank, world_size=world_size,
-        num_workers=num_workers, action_horizon=policy_config["num_queries"])
+        num_workers=num_workers, action_horizon=policy_config["num_queries"],
+        pretrained_norm_stats=pretrained_norm_stats)
 
     # save dataset stats
     if rank == 0 and not os.path.isdir(ckpt_dir):
         os.makedirs(ckpt_dir)
     stats_path = os.path.join(ckpt_dir, f"dataset_stats.pkl")
+    config["dataset_stats"] = stats
+    config["loaded_resume_state"] = resume_state
     if rank == 0:
         with open(stats_path, "wb") as f:
             pickle.dump(stats, f)
@@ -416,6 +448,33 @@ def forward_pass(data, policy):
     return policy(qpos_data, image_data, action_data, is_pad)  # TODO remove None
 
 
+def init_wandb(config):
+    """Initialize the single rank-0 W&B run, unless explicitly disabled."""
+    if config["wandb_mode"] == "disabled":
+        return None
+    try:
+        import wandb
+    except ImportError as exc:
+        raise ImportError(
+            "W&B logging is enabled; install the ACT environment or pass "
+            "--wandb-mode disabled."
+        ) from exc
+    return wandb.init(
+        project=config["wandb_project"],
+        name=config["wandb_name"],
+        mode=config["wandb_mode"],
+        dir=config["ckpt_dir"],
+        config={
+            "task_name": config["task_name"],
+            "policy_class": config["policy_class"],
+            "num_epochs": config["num_epochs"],
+            "seed": config["seed"],
+            "world_size": config["world_size"],
+            "policy_config": config["policy_config"],
+        },
+    )
+
+
 def train_bc(train_dataloader, val_dataloader, config):
     num_epochs = config["num_epochs"]
     ckpt_dir = config["ckpt_dir"]
@@ -431,6 +490,12 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     policy = make_policy(policy_class, policy_config)
     policy.to(device)
+    if config.get("init_checkpoint"):
+        checkpoint = torch.load(config["init_checkpoint"], map_location="cpu", weights_only=True)
+        policy.load_state_dict(checkpoint, strict=True)
+        if rank == 0:
+            print(f"Loaded model weights from {config['init_checkpoint']} at epoch {config['start_epoch']}; "
+                  "optimizer state is new (weight-only continuation).")
     optimizer = make_optimizer(policy_class, policy)
     if distributed:
         policy = DistributedDataParallel(
@@ -443,8 +508,25 @@ def train_bc(train_dataloader, val_dataloader, config):
     validation_history = []
     min_val_loss = np.inf
     best_ckpt_info = None
+    wandb_run = init_wandb(config) if rank == 0 else None
 
-    for epoch in tqdm(range(num_epochs), disable=rank != 0):
+    start_epoch = config.get("start_epoch", 0)
+    resumed = config.pop("loaded_resume_state", None)
+    if resumed is not None:
+        if len(resumed["rng"]) != world_size:
+            raise ValueError("Resume requires the same GPU/process count")
+        state_source = policy.module if distributed else policy
+        state_source.load_state_dict(resumed["model"])
+        optimizer.load_state_dict(resumed["optimizer"])
+        start_epoch = int(resumed["next_epoch"])
+        min_val_loss = resumed["min_val_loss"]
+        best_ckpt_info = resumed["best_ckpt_info"] if rank == 0 else None
+        restore_rng(resumed["rng"][rank])
+        if start_epoch >= num_epochs:
+            raise ValueError("num_epochs must exceed the restored next_epoch")
+        if rank == 0:
+            print(f"Restored model/optimizer at epoch {start_epoch}")
+    for epoch in tqdm(range(start_epoch, num_epochs), disable=rank != 0):
         if rank == 0:
             print(f"\nEpoch {epoch}")
         if hasattr(train_dataloader.sampler, "set_epoch"):
@@ -491,12 +573,42 @@ def train_bc(train_dataloader, val_dataloader, config):
         epoch_train_loss = epoch_summary["loss"]
         if rank == 0:
             print(f"Train loss: {epoch_train_loss:.5f}")
+            if wandb_run is not None:
+                metrics = {
+                    f"train/{key}": float(value.item())
+                    for key, value in epoch_summary.items()
+                }
+                metrics.update({
+                    f"validation/{key}": float(value.item())
+                    for key, value in validation_history[-1].items()
+                })
+                wandb_run.log(metrics, step=epoch)
 
-        if rank == 0 and (epoch + 1) % config['save_freq'] == 0:
+        if rank == 0 and config['save_freq'] > 0 and (epoch + 1) % config['save_freq'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f"policy_epoch_{epoch + 1}_seed_{seed}.ckpt")
             state_source = policy.module if distributed else policy
             torch.save(state_source.state_dict(), ckpt_path)
-            plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+            plot_history(train_history, validation_history, epoch, ckpt_dir, seed,
+                         start_epoch=start_epoch)
+
+        state_every = config["save_freq"]
+        if ((state_every > 0 and (epoch + 1) % state_every == 0)
+                or epoch + 1 == num_epochs):
+            rng_states = [None] * world_size
+            if distributed:
+                dist.all_gather_object(rng_states, capture_rng())
+            else:
+                rng_states[0] = capture_rng()
+            if rank == 0:
+                state_source = policy.module if distributed else policy
+                atomic_save({
+                    "model": state_source.state_dict(), "optimizer": optimizer.state_dict(),
+                    "next_epoch": epoch + 1, "min_val_loss": min_val_loss,
+                    "best_ckpt_info": best_ckpt_info, "rng": rng_states,
+                    "dataset_stats": config["dataset_stats"],
+                }, os.path.join(ckpt_dir, "state", "latest.pt"))
+            if distributed:
+                dist.barrier()
 
     if rank != 0:
         return None
@@ -510,12 +622,15 @@ def train_bc(train_dataloader, val_dataloader, config):
     print(f"Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}")
 
     # save training curves
-    plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
+    plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed,
+                 start_epoch=start_epoch)
+    if wandb_run is not None:
+        wandb_run.finish()
 
     return best_ckpt_info
 
 
-def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
+def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed, start_epoch=0):
     # save training curves
     for key in train_history[0]:
         plot_path = os.path.join(ckpt_dir, f"train_val_{key}_seed_{seed}.png")
@@ -523,12 +638,12 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         train_values = [summary[key].item() for summary in train_history]
         val_values = [summary[key].item() for summary in validation_history]
         plt.plot(
-            np.linspace(0, num_epochs - 1, len(train_history)),
+            np.linspace(start_epoch, num_epochs - 1, len(train_history)),
             train_values,
             label="train",
         )
         plt.plot(
-            np.linspace(0, num_epochs - 1, len(validation_history)),
+            np.linspace(start_epoch, num_epochs - 1, len(validation_history)),
             val_values,
             label="validation",
         )
@@ -558,6 +673,14 @@ if __name__ == "__main__":
                         help="DataLoader workers per train/validation loader and rank")
     parser.add_argument("--seed", action="store", type=int, help="seed", required=True)
     parser.add_argument("--num_epochs", action="store", type=int, help="num_epochs", required=True)
+    parser.add_argument("--start-epoch", type=int, default=0,
+                        help="First epoch to run when continuing from model weights")
+    parser.add_argument("--init-checkpoint", type=str, default=None,
+                        help="ACT model-weight checkpoint for weight-only continuation")
+    parser.add_argument("--resume-state", type=str, default=None,
+                        help="Full state/latest.pt, including optimizer and normalization")
+    parser.add_argument("--init-stats", type=str, default=None,
+                        help="Normalization stats saved alongside --init-checkpoint")
     parser.add_argument("--lr", action="store", type=float, help="lr", required=True)
 
     # for ACT
@@ -574,6 +697,13 @@ if __name__ == "__main__":
         required=False,
     )
     parser.add_argument("--temporal_agg", action="store_true")
+    parser.add_argument("--wandb-project", default="flying_hand_act")
+    parser.add_argument("--wandb-name", default=None)
+    parser.add_argument(
+        "--wandb-mode",
+        choices=("online", "offline", "disabled"),
+        default=os.environ.get("WANDB_MODE", "online"),
+    )
 
     try:
         main(vars(parser.parse_args()))

@@ -8,7 +8,6 @@ instruction_type: seen
 
 # ACT-specific arguments
 action_dim: 14
-kl_weight: 10.0
 # For Flying-Hand this value is replaced by query_embed.weight from the
 # checkpoint. 32 is the current train_flying_hand.sh architecture.
 chunk_size: 32
@@ -19,14 +18,9 @@ device: cuda:0
 
 # DETR parser args
 ckpt_dir: null
-policy_class: ACT
-num_epochs: 2000
 
-# Model training params
+# Model architecture params required to reconstruct the checkpoint
 position_embedding: sine
-lr_backbone: 0.00001
-weight_decay: 0.0001
-lr: 0.00001
 masks: false
 dilation: false
 backbone: resnet18

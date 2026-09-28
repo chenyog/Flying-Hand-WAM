@@ -69,12 +69,18 @@ def init_wandb(
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
     if resuming:
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
-        wandb.init(id=run_id, resume="must", project=config.project_name)
+        wandb.init(
+            id=run_id,
+            resume="must",
+            project=config.project_name,
+            mode=config.wandb_mode,
+        )
     else:
         wandb.init(
             name=config.exp_name,
             config=dataclasses.asdict(config),
             project=config.project_name,
+            mode=config.wandb_mode,
         )
         (ckpt_dir / "wandb_id.txt").write_text(wandb.run.id)
 
@@ -240,14 +246,24 @@ def main(config: _config.TrainConfig):
         overwrite=config.overwrite,
         resume=config.resume,
     )
-    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
-
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
         num_workers=config.num_workers,
         shuffle=True,
     )
+    if config.num_train_steps is None:
+        if config.num_epochs is None or config.num_epochs <= 0:
+            raise ValueError("Set positive num_epochs when num_train_steps is None")
+        steps_per_epoch = len(data_loader)
+        if steps_per_epoch <= 0:
+            raise ValueError("Training DataLoader has no complete batches")
+        config = dataclasses.replace(config, num_train_steps=config.num_epochs * steps_per_epoch)
+        logging.info("Training budget: %d epochs x %d steps = %d steps (drop_last=True)",
+                     config.num_epochs, steps_per_epoch, config.num_train_steps)
+    elif config.num_train_steps <= 0:
+        raise ValueError("num_train_steps must be positive")
+    init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
@@ -288,11 +304,14 @@ def main(config: _config.TrainConfig):
             infos = []
         batch = next(data_iter)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            if step == config.num_train_steps - 1:
-                _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step + 1)
-            else:
-                _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+        completed = step + 1
+        final = completed == config.num_train_steps
+        save_weights = final or (config.save_interval > 0 and completed % config.save_interval == 0)
+        if save_weights:
+            _checkpoints.save_state(
+                checkpoint_manager, train_state, data_loader, completed,
+                save_weights=True, save_resume=True,
+            )
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

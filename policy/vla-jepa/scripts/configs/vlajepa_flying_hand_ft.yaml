@@ -1,0 +1,115 @@
+run_id: vlajepa_flying_hand
+run_root_dir: ./runs
+seed: 42
+trackers: [json, wandb]
+wandb_project: flying-hand-vla-jepa
+wandb_entity: null
+wandb_mode: online
+is_debug: false
+framework:
+  name: VLA_JEPA
+  qwenvl:
+    base_vlm: ./checkpoints/Qwen3-VL-2B-Instruct
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048
+  action_model:
+    action_model_type: DiT-B
+    action_hidden_dim: 1024
+    hidden_size: 1024
+    add_pos_embed: true
+    max_seq_len: 1024
+    action_dim: 5
+    state_dim: 5
+    # Eight commands at 20 Hz cover 0.4 s; action[t] already targets t+1.
+    future_action_window_size: 7
+    action_horizon: 8
+    past_action_window_size: 0
+    repeated_diffusion_steps: 8
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 32
+    diffusion_model_cfg:
+      cross_attention_dim: 2048
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: ada_norm
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
+  vj2_model:
+    base_encoder: ./checkpoints/vjepa2-vitl-fpc64-256
+    # Frames t..t+7, 50 ms apart: 350 ms first-to-last, 400 ms frame bins.
+    # Future images supervise JEPA only; policy input uses the first frame.
+    num_frames: 8
+    depth: 12
+    num_heads: 8
+    special_action_token: <|action_{}|>
+    # Preserve the original 7-step pretraining tokenizer's 28 added action tokens
+    # when transferring Qwen weights; the 8-frame JEPA clip uses just three.
+    max_action_tokens: 28
+    num_action_tokens_per_timestep: 8
+    embodied_action_token: <|embodied_action|>
+    num_embodied_action_tokens_per_instruction: 32
+  reduce_in_full_precision: true
+datasets:
+  vla_data:
+    dataset_py: flying_hand_datasets
+    data_root_dir: ../../data/lerobot/flying_hand_direct_all_tasks
+    data_mix: flying_hand_direct_all_tasks
+    action_type: absolute
+    CoT_prompt: Your task is {instruction}. Infer the temporal dynamics from frames {actions} and produce the corresponding policy actions {e_actions}.
+    resolution_size: 224
+    video_resolution_size: 256
+    # Eight-GPU throughput sweep: global 88 sustained 40.96 samples/s. Global
+    # 96 reached 41.79 in-window but failed with an asynchronous CUDA OOM.
+    per_device_batch_size: 11
+    num_workers: 4
+    action_horizon: 8
+    with_state: true
+trainer:
+  # VLA_JEPA.forward reads this trainer key (not action_model's copy).
+  repeated_diffusion_steps: 8
+  epochs: 100
+  # Resolve 100 epochs from the distributed DataLoader before creating the scheduler.
+  # A positive max_train_steps explicitly overrides the epoch budget.
+  max_train_steps: null
+  num_warmup_steps: 273
+  save_interval: 10000
+  resume_from_checkpoint: null
+  eval_interval: 200
+  learning_rate:
+    base: 3.0e-05
+    qwen_vl_interface: 1.0e-05
+    action_model: 0.0001
+    vj_predictor: 0.0005
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-05
+  freeze_modules: ''
+  loss_scale:
+    vla: 1.0
+    vlm: 0.1
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  weight_decay: 0.0
+  logging_frequency: 2
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  # Optional JEPA warm start: transfer only shape-compatible backbones.
+  # The original 7D action head cannot initialize Flying-Hand's 5D action head.
+  pretrained_checkpoint: null
+  reload_modules: qwen_vl_interface,vj_predictor
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  is_resume: false
+  resume_epoch: null
+  resume_step: null
+  enable_gradient_checkpointing: true
+  enable_mixed_precision_training: true

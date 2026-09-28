@@ -120,7 +120,9 @@ class Joiner(nn.Sequential):
 
 def build_backbone(args):
     position_embedding = build_position_encoding(args)
-    train_backbone = args.lr_backbone > 0
+    # train_backbone is ignored by BackboneBase in this implementation, and an
+    # inference-only config should not need to provide an optimizer learning rate.
+    train_backbone = getattr(args, "lr_backbone", 0.0) > 0
     return_interm_layers = args.masks
     backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
     model = Joiner(backbone, position_embedding)

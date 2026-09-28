@@ -1,5 +1,10 @@
 name: flying_hand
 
+# train.py refreshes this from the selected camera configuration before
+# constructing the workspace.  Keep the key in the structured config so the
+# assignment is valid when OmegaConf struct mode is enabled.
+image_shape: [3, 360, 480]
+
 # Stored Flying-Hand Zarr frames are channel-first RGB. The two cameras have
 # different native resolutions and are resized by the policy encoder.
 shape_meta: &shape_meta

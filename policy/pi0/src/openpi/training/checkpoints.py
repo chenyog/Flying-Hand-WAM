@@ -19,7 +19,7 @@ def initialize_checkpoint_dir(
     keep_period: int | None,
     overwrite: bool,
     resume: bool,
-) -> tuple[ocp.CheckpointManager, bool]:
+) -> tuple["SplitCheckpointManager", bool]:
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
     resuming = False
     if checkpoint_dir.exists():
@@ -36,7 +36,7 @@ def initialize_checkpoint_dir(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     mngr = ocp.CheckpointManager(
-        checkpoint_dir,
+        checkpoint_dir / "state",
         item_handlers={
             "assets": CallbackHandler(),
             "train_state": ocp.PyTreeCheckpointHandler(),
@@ -44,8 +44,8 @@ def initialize_checkpoint_dir(
         },
         options=ocp.CheckpointManagerOptions(
             max_to_keep=1,
-            keep_period=keep_period,
-            create=False,
+            keep_period=None,
+            create=True,
             async_options=ocp.AsyncOptions(timeout_secs=7200),
         ),
     )
@@ -53,18 +53,61 @@ def initialize_checkpoint_dir(
     # special case: the checkpoint directory exists and the user requests to resume training, but the training run did
     # not get to the first checkpoint saved. in this case, we don't actually want the train script to try and restore a
     # checkpoint, since it will fail.
-    if resuming and tuple(mngr.all_steps()) in [(), (0, )]:
+    legacy_step = None
+    if resuming and not mngr.all_steps():
+        legacy_steps = [int(p.name) for p in checkpoint_dir.iterdir()
+                        if p.name.isdigit() and (p / "train_state").is_dir()]
+        legacy_step = max(legacy_steps, default=None)
+    if resuming and not mngr.all_steps() and legacy_step is None:
+        if any(p.name.isdigit() for p in checkpoint_dir.iterdir()):
+            mngr.close()
+            raise ValueError("Only inference checkpoints exist; no full training state to resume")
         logging.info("Checkpoint directory exists, but does not contain any checkpoints. Aborting resume.")
         resuming = False
 
-    return mngr, resuming
+    weights = ocp.CheckpointManager(
+        checkpoint_dir,
+        item_handlers={"assets": CallbackHandler(), "params": ocp.PyTreeCheckpointHandler()},
+        options=ocp.CheckpointManagerOptions(max_to_keep=1, keep_period=keep_period, create=False),
+    )
+    return SplitCheckpointManager(mngr, weights, checkpoint_dir, legacy_step), resuming
+
+
+class SplitCheckpointManager:
+    """Keep periodic inference artifacts and only the latest complete resume state."""
+
+    def __init__(self, state, weights, directory, legacy_step=None):
+        self.state = state
+        self.weights = weights
+        self.directory = directory
+        self.legacy_step = legacy_step
+
+    def restore(self, step, items):
+        if self.state.all_steps():
+            return self.state.restore(step, items=items)
+        if self.legacy_step is None:
+            raise ValueError("No full resume state found; inference weights are not resumable")
+        with ocp.CheckpointManager(
+            self.directory,
+            item_handlers={"train_state": ocp.PyTreeCheckpointHandler(),
+                           "params": ocp.PyTreeCheckpointHandler()},
+            options=ocp.CheckpointManagerOptions(create=False),
+        ) as legacy:
+            return legacy.restore(self.legacy_step if step is None else step, items=items)
+
+    def wait_until_finished(self):
+        self.state.wait_until_finished()
+        self.weights.wait_until_finished()
 
 
 def save_state(
-    checkpoint_manager: ocp.CheckpointManager,
+    checkpoint_manager: SplitCheckpointManager,
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
+    *,
+    save_weights: bool = True,
+    save_resume: bool = True,
 ):
 
     def save_assets(directory: epath.Path):
@@ -84,11 +127,18 @@ def save_state(
             "params": params
         },
     }
-    checkpoint_manager.save(step, items)
+    if save_weights:
+        checkpoint_manager.weights.save(
+            step, {k: v for k, v in items.items() if k != "train_state"}
+        )
+    if save_resume:
+        if save_weights:
+            checkpoint_manager.weights.wait_until_finished()
+        checkpoint_manager.state.save(step, items)
 
 
 def restore_state(
-    checkpoint_manager: ocp.CheckpointManager,
+    checkpoint_manager: SplitCheckpointManager,
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int | None = None,

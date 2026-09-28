@@ -182,6 +182,9 @@ def rerender_flying_hand_eval_histories(replay_dir, video_dir):
 
 def apply_task_overrides(task_args, usr_args):
     """Apply safe task overrides while preserving the Flying-Hand sim contract."""
+    from envs.flying_hand.eval_perturbation import validate_config
+    if 'eval_perturbation' in usr_args or 'eval_perturbation' in task_args:
+        task_args['eval_perturbation'] = validate_config(usr_args.get('eval_perturbation', task_args.get('eval_perturbation')))
     protected_flying_hand_keys = {
         "timestep",
         "save_freq",
@@ -203,7 +206,8 @@ def apply_task_overrides(task_args, usr_args):
                     "Select the matching direct/dynamics task_config instead."
                 )
             continue
-        task_args[key] = usr_args[key]
+        if key != 'eval_perturbation':
+            task_args[key] = usr_args[key]
 
 
 def flying_hand_simulation_contract(task_args, instruction_type):
@@ -222,6 +226,8 @@ def flying_hand_simulation_contract(task_args, instruction_type):
     )
     contract = {key: task_args[key] for key in keys}
     contract["instruction_type"] = str(instruction_type)
+    if task_args.get('eval_perturbation', {}).get('enabled', False):
+        contract['eval_perturbation'] = task_args['eval_perturbation']
     canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"))
     return {
         "format_version": 1,
@@ -360,7 +366,12 @@ def main(usr_args):
 
     seed = usr_args["seed"]
 
-    st_seed = 100000 * (1 + seed)
+    # Allow independent workers to evaluate disjoint, deterministic seed ranges.
+    # The default offset preserves the usual 100000-based evaluation sequence.
+    eval_seed_offset = int(usr_args.get("eval_seed_offset", 0))
+    if eval_seed_offset < 0:
+        raise ValueError("eval_seed_offset must be non-negative")
+    st_seed = 100000 * (1 + seed) + eval_seed_offset
     suc_nums = []
     test_num = int(usr_args.get("eval_num_episodes", 100))
     topk = 1
@@ -371,6 +382,7 @@ def main(usr_args):
                                    args,
                                    model,
                                    st_seed,
+                                   start_episode=eval_seed_offset,
                                    test_num=test_num,
                                    video_sizes=video_sizes,
                                    eval_video_fps=eval_video_fps,
@@ -408,6 +420,7 @@ def eval_policy(task_name,
                 args,
                 model,
                 st_seed,
+                start_episode=0,
                 test_num=100,
                 video_sizes=None,
                 eval_video_fps=None,
@@ -420,7 +433,7 @@ def eval_policy(task_name,
     TASK_ENV.suc = 0
     TASK_ENV.test_num = 0
 
-    now_id = 0
+    now_id = start_episode
     succ_seed = 0
     suc_test_seed_list = []
 
@@ -486,6 +499,13 @@ def eval_policy(task_name,
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         is_flying_hand = "flying-hand" in args.get("embodiment", [])
+        TASK_ENV.eval_perturbation = None
+        if is_flying_hand and args.get('eval_perturbation', {}).get('enabled', False):
+            from envs.flying_hand.eval_perturbation import EvalPerturbation
+            TASK_ENV.eval_perturbation = EvalPerturbation(
+                args['eval_perturbation'], task_name, now_seed, TASK_ENV.sim_timestep,
+                TASK_ENV.step_lim * TASK_ENV.save_freq * TASK_ENV.sim_timestep,
+                TASK_ENV.enable_dynamics)
         record_episode_history = is_flying_hand and TASK_ENV.eval_video_path is not None
         live_episode_video = not is_flying_hand and TASK_ENV.eval_video_path is not None
         if record_episode_history:
@@ -576,6 +596,13 @@ def eval_policy(task_name,
             with open(diagnostics_path, "a", encoding="utf-8") as diagnostics_file:
                 diagnostics_file.write(json.dumps(episode_diagnostics, allow_nan=False) + "\n")
 
+        if TASK_ENV.eval_perturbation is not None:
+            record = dict(TASK_ENV.eval_perturbation.record, episode=int(now_id),
+                          success=bool(succ), action_count=int(TASK_ENV.take_action_cnt))
+            if diagnostics_path is not None:
+                with open(Path(diagnostics_path).parent / 'perturbations.jsonl', 'a', encoding='utf-8') as output:
+                    output.write(json.dumps(record, allow_nan=False) + '\n')
+            print('PERTURBATION', json.dumps(record, allow_nan=False), flush=True)
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
 

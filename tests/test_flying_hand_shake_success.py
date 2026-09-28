@@ -38,11 +38,33 @@ class ShakeBottleSuccessTest(unittest.TestCase):
         self.assertEqual(self.env.completed_shake_cycles, 0)
         self.assertFalse(self.env.check_success())
 
-    def test_requires_all_expert_shake_cycles(self):
-        for y in [0.31, 0.09, 0.31, 0.09]:
+    def test_one_complete_cycle_is_not_enough(self):
+        for y in [0.29, 0.11]:
+            self.sample(y=y)
+
+        self.assertEqual(self.env.completed_shake_cycles, 1)
+        self.assertFalse(self.env.check_success())
+
+    def test_two_actual_alternating_cycles_succeed_while_lifted(self):
+        for y in [0.29, 0.11, 0.29, 0.11]:
+            self.sample(y=y)
+
+        self.assertEqual(self.env.shake_extreme_visits, 4)
+        self.assertEqual(self.env.completed_shake_cycles, 2)
+        self.assertTrue(self.env.check_success())
+
+    def test_small_alternating_motion_has_no_amplitude_threshold(self):
+        for y in [0.205, 0.195, 0.205, 0.195]:
             self.sample(y=y)
 
         self.assertEqual(self.env.completed_shake_cycles, 2)
+        self.assertTrue(self.env.check_success())
+
+    def test_no_lateral_motion_is_not_a_shake_cycle(self):
+        for _ in range(4):
+            self.sample(y=0.2)
+
+        self.assertEqual(self.env.completed_shake_cycles, 0)
         self.assertFalse(self.env.check_success())
 
     def test_three_actual_alternating_cycles_succeed_while_lifted(self):
@@ -58,7 +80,7 @@ class ShakeBottleSuccessTest(unittest.TestCase):
 
     def test_motion_before_lift_does_not_count(self):
         for y in [0.31, 0.09, 0.31, 0.09, 0.31, 0.09]:
-            self.sample(y=y, z=0.82)
+            self.sample(y=y, z=0.81)
         self.sample(y=0.2, z=0.9)
 
         self.assertEqual(self.env.shake_extreme_visits, 0)

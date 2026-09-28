@@ -297,48 +297,6 @@ def _constrain_policy_target_pose(task_env: Any, previous_pose: Any, target_pose
     return sapien.Pose(target.tolist(), orientation.tolist())
 
 
-def _step_dynamics_safely(
-    task_env: Any,
-    reference_pose: Any,
-    velocity: np.ndarray,
-    acceleration: np.ndarray,
-    grasped: bool,
-):
-    """Advance analytical dynamics without forwarding a numerical explosion.
-
-    The learned policy is allowed to be wrong, but one bad target must not
-    turn into an unbounded SAPIEN root pose. The recovery is deliberately
-    local to policy evaluation; expert planner execution is unchanged.
-    Resetting the observer at the reference pose also prevents a
-    stale estimator residual from re-launching the body on the next step.
-    """
-    dynamics = task_env.flying_hand_dynamics
-    hand_pose, hand_v = dynamics.step(
-        reference_pose,
-        velocity,
-        acceleration,
-        grasped,
-    )
-    limits = task_env.flying_hand_waypoint_tracking
-    max_error = max(0.25, float(limits["max_velocity"]) * 0.75)
-    position_error = float(
-        np.linalg.norm(np.asarray(hand_pose.p, dtype=float) - np.asarray(reference_pose.p, dtype=float))
-    )
-    finite = (
-        np.isfinite(np.asarray(hand_pose.p, dtype=float)).all()
-        and np.isfinite(np.asarray(hand_pose.q, dtype=float)).all()
-        and np.isfinite(np.asarray(hand_v, dtype=float)).all()
-        and np.isfinite(np.asarray(dynamics.w, dtype=float)).all()
-    )
-    if not finite or position_error > max_error:
-        dynamics.sync(reference_pose)
-        hand_pose = reference_pose
-        hand_v = np.zeros(3, dtype=float)
-        recoveries = int(getattr(task_env, "flying_hand_dynamics_recoveries", 0)) + 1
-        task_env.flying_hand_dynamics_recoveries = recoveries
-    return hand_pose, np.asarray(hand_v, dtype=float)
-
-
 def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
     """Execute the policy-selected action chunk and update eval accounting.
 
@@ -360,8 +318,6 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
         actions = actions[:remaining]
     if len(actions) == 0:
         return 0
-    if int(getattr(task_env, "take_action_cnt", 0)) == 0:
-        task_env.flying_hand_dynamics_recoveries = 0
     if not hasattr(task_env, "take_action_cnt"):
         task_env.take_action_cnt = 0
     if callable(getattr(model, "_record_action_chunk", None)):
@@ -376,17 +332,6 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
     previous_target_pose = task_env.flying_hand.get_root_pose()
     for action in actions:
         pose = relative_xyzyaw_to_world_pose(task_env, action)
-        target_filter = getattr(task_env, "filter_flying_hand_policy_target", None)
-        if callable(target_filter):
-            current = getattr(task_env, "flying_hand_ref_pose", None)
-            if current is None:
-                current = task_env.flying_hand.get_root_pose()
-            filtered = target_filter(
-                pose,
-                current,
-                carried_actor=getattr(model, "attached_actor", None),
-            )
-            pose = filtered[0] if isinstance(filtered, tuple) else filtered
         pose = _constrain_policy_target_pose(task_env, previous_target_pose, pose)
         target_poses.append(pose)
         previous_target_pose = pose
@@ -400,6 +345,8 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
         int(np.ceil(len(samples) / max(len(actions), 1))),
     )
     sample_index = 0
+    perturbation = getattr(task_env, 'eval_perturbation', None)
+    chunk_offset = np.zeros(3)
     for index, action in enumerate(actions):
         grasp_state = (
             float(action[4]) > open_threshold
@@ -411,16 +358,31 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
             sample_index + samples_per_waypoint,
         )
         for reference_pose, velocity, acceleration in samples[sample_index:segment_end]:
+            force_kwargs = {}
+            if perturbation is not None:
+                offset, force = perturbation.sample(task_env.flying_hand.get_root_pose())
+                if bool(getattr(task_env, 'enable_dynamics', False)):
+                    force_kwargs['external_force_world'] = force
+                else:
+                    # One displacement, retained through the current open-loop
+                    # chunk; do not teleport back on the next simulation tick.
+                    # The next chunk is built from the actual displaced pose.
+                    chunk_offset += offset
+                    if np.any(chunk_offset):
+                        import sapien
+                        reference_pose = sapien.Pose(reference_pose.p + chunk_offset, reference_pose.q)
             task_env.flying_hand_ref_pose = reference_pose
             if bool(getattr(task_env, "enable_dynamics", False)):
-                hand_pose, hand_v = _step_dynamics_safely(
-                    task_env,
+                # Preserve the dynamics result instead of resetting to the
+                # reference when tracking diverges.
+                hand_pose, hand_v = task_env.flying_hand_dynamics.step(
                     reference_pose,
                     velocity,
                     acceleration,
                     bool(getattr(task_env, "is_grasping", False))
                     and int(getattr(task_env, "flying_hand_gripper_step", 0))
                     >= int(getattr(task_env, "flying_hand_gripper_steps", 0)),
+                    **force_kwargs,
                 )
                 task_env.flying_hand.set_root_pose(hand_pose)
                 task_env.flying_hand.set_root_linear_velocity(hand_v.tolist())
@@ -433,6 +395,9 @@ def execute_action_chunk(task_env: Any, model: Any, actions: Any) -> int:
 
                 planner.set_pose(task_env, reference_pose, velocity)
                 applied_pose = reference_pose
+                if perturbation is not None and np.any(offset):
+                    perturbation.record['hand_position_after'] = np.asarray(
+                        task_env.flying_hand.get_root_pose().p).tolist()
             # Only an active, validated grasp may drive an isolated actor.
             # A stale model attachment must never move an object after release
             # or after a failed grasp transition.

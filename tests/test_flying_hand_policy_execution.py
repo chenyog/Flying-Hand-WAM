@@ -99,6 +99,60 @@ class FlyingHandPolicyExecutionTest(unittest.TestCase):
         )
         self.assertTrue(np.all(np.diff(positions[:, 0]) > 0.0))
 
+    def test_dynamics_tracking_error_does_not_reset_to_reference(self):
+        dynamics = self.env.flying_hand_dynamics
+        actual_pose = sapien.Pose([2.0, -1.0, 0.5])
+        actual_velocity = np.array([0.2, -0.1, 0.3])
+        dynamics.step = mock.Mock(return_value=(actual_pose, actual_velocity))
+        dynamics.sync = mock.Mock()
+        self.env.flying_hand.set_root_linear_velocity = mock.Mock()
+        with mock.patch("envs.flying_hand.planner.step"):
+            execute_action_chunk(self.env, self.model, np.zeros((1, 5)))
+
+        dynamics.sync.assert_not_called()
+        np.testing.assert_allclose(self.env.flying_hand.get_root_pose().p, actual_pose.p)
+        np.testing.assert_allclose(
+            self.env.flying_hand.set_root_linear_velocity.call_args.args[0],
+            actual_velocity,
+        )
+        self.assertFalse(hasattr(self.env, "flying_hand_dynamics_recoveries"))
+
+    def test_dynamics_exception_is_not_recovered(self):
+        dynamics = self.env.flying_hand_dynamics
+        dynamics.step = mock.Mock(side_effect=FloatingPointError("unstable dynamics"))
+        dynamics.sync = mock.Mock()
+        with mock.patch("envs.flying_hand.planner.step"), self.assertRaises(FloatingPointError):
+            execute_action_chunk(self.env, self.model, np.zeros((1, 5)))
+        dynamics.sync.assert_not_called()
+
+    def test_ranking_low_target_is_not_corrected_using_block_geometry(self):
+        from envs.flying_hand.blocks_ranking_rgb import blocks_ranking_rgb
+        from envs.flying_hand.blocks_ranking_size import blocks_ranking_size
+
+        for task_type in (blocks_ranking_rgb, blocks_ranking_size):
+            with self.subTest(task=task_type.__name__):
+                env = task_type.__new__(task_type)
+                env.__dict__.update(self.env.__dict__)
+                env.enable_dynamics = False
+                env.flying_hand = _Hand()
+                env.flying_hand.pose = sapien.Pose([0.58, 0.0, 0.90])
+                env.flying_hand_ref_pose = env.flying_hand.pose
+                block = object()
+                env.blocks = [block]
+                env.flying_hand_config = {"root": {"u_center_offset": [0, 0, 0]}}
+                env._get_actor_world_bounds = mock.Mock(
+                    return_value=np.array([[0.68, -0.02, 0.98], [0.72, 0.02, 1.02]])
+                )
+                env.check_success = lambda: False
+                with mock.patch("envs.flying_hand.planner.step"):
+                    execute_action_chunk(
+                        env, self.model, np.array([[0.60, 0.0, 0.90, 0.0, 0.0]])
+                    )
+                np.testing.assert_allclose(
+                    env.flying_hand.get_root_pose().p, [0.60, 0.0, 0.90], atol=1e-6
+                )
+                env._get_actor_world_bounds.assert_not_called()
+
     def test_action_chunk_uses_endpoint_and_central_differences(self):
         actions = np.array(
             [

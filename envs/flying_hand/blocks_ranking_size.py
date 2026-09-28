@@ -7,8 +7,6 @@ from .blocks_ranking_rgb import blocks_ranking_rgb
 
 
 class blocks_ranking_size(blocks_ranking_rgb):
-    # Size ranking uses its own unequal-height staging poses.
-    policy_block_clearance_enabled = False
     grasp_y_offset = 0.02
     pre_grasp_x_offset = -0.58
     grasp_x_offset = -0.10
@@ -133,4 +131,5 @@ class blocks_ranking_size(blocks_ranking_rgb):
             self._task_objects_safe()
             and all(np.linalg.norm(p - t) < 0.08 for p, t in zip(poses, self.target_centers))
             and np.argsort([-p[1] for p in poses]).tolist() == [0, 1, 2]
+            and not self.is_grasping
         )

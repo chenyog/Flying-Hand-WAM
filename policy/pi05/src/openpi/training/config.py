@@ -553,7 +553,9 @@ class TrainConfig:
     # will increase memory and CPU usage.
     num_workers: int = 2
     # Number of train steps (batches) to run.
-    num_train_steps: int = 30_000
+    num_train_steps: int | None = 30_000
+    # Used only when num_train_steps is None; explicit steps take precedence.
+    num_epochs: int | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -569,6 +571,9 @@ class TrainConfig:
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
+    # W&B transport mode. Online is the default; offline and disabled remain
+    # explicit command-line overrides.
+    wandb_mode: Literal["online", "offline", "disabled"] = "online"
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -597,6 +602,8 @@ class TrainConfig:
         return nnx.All(nnx.Param, nnx.Not(self.freeze_filter))
 
     def __post_init__(self) -> None:
+        if self.save_interval < 0:
+            raise ValueError("Save intervals must be non-negative.")
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
@@ -680,10 +687,19 @@ _CONFIGS = [
             action_dim=32,
             action_horizon=32,
         ).get_freeze_filter(),
-        # Conservative global batch for full fine-tuning; override after checking VRAM.
-        batch_size=8,
+        # Eight-GPU FSDP throughput plateau: global 192 reaches 39.44 samples/s
+        # and global 224 reaches 39.56, only 0.30% faster. Use the smaller
+        # plateau point (24 examples per GPU).
+        batch_size=192,
         weight_loader=weight_loaders.CheckpointWeightLoader("/data/Flying-Hand-WAM/policy/pi05/checkpoints/pi05_base/params"),
-        num_train_steps=50000,
+        # Resolve two complete DataLoader passes from the actual dataset/batch.
+        # Explicit --num-train-steps overrides this epoch budget.
+        num_train_steps=None,
+        num_epochs=2,
+        lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=42, decay_steps=1_260),
+        log_interval=5,
+        save_interval=42,
+        keep_period=210,
         fsdp_devices=8,
     ),
     # pi05_base by full
