@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <task> <task_config> <checkpoint_path> [seed] [gpu_id] [episodes]"
-  echo "Example: $0 flying_hand/blocks_ranking_rgb flying_hand_clean /path/to/600.ckpt 0 0 10"
+  echo "Example: $0 blocks_ranking_rgb flying_hand_clean /path/to/600.ckpt 0 0 10"
 }
 
 if [[ $# -lt 3 || $# -gt 6 ]]; then
@@ -12,6 +12,9 @@ if [[ $# -lt 3 || $# -gt 6 ]]; then
 fi
 
 TASK_NAME="$1"
+# eval_policy.py adds the Flying-Hand namespace itself. Accept the old
+# fully-qualified form, but normalize it to avoid flying_hand/flying_hand/...
+TASK_NAME="${TASK_NAME#flying_hand/}"
 TASK_CONFIG="$2"
 CHECKPOINT_PATH="$3"
 SEED="${4:-0}"

@@ -20,7 +20,9 @@ max_steps: null
 log_every: 8
 # Rounded sample-equivalent intervals relative to the former effective global
 # batch 128 (8 devices x batch 8 x accumulation 2).
-save_every: 420
+# Keep historical inference checkpoints at a coarse interval.  Full ZeRO
+# resume state is controlled independently by the launch override.
+save_every: 3000
 eval_every: 84
 
 gradient_accumulation_steps: 1

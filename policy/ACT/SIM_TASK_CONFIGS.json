@@ -35,5 +35,29 @@
             "/data/Flying-Hand-WAM/data/flying_hand_direct/stack_blocks_two_size/flying_hand_direct_clean",
             "/data/Flying-Hand-WAM/data/flying_hand_direct/thread_ring_rod/flying_hand_direct_clean"
         ]
+    },
+    "sim-flying_hand-multi-df88d23270c1": {
+        "dataset_dir": "processed_data/sim-flying_hand/multi-df88d23270c1",
+        "num_episodes": 1000,
+        "episode_len": 1000,
+        "camera_names": [
+            "cam_high",
+            "cam_wrist"
+        ],
+        "robot_type": "flying_hand",
+        "action_dim": 5,
+        "source_task_config": "flying_hand_clean",
+        "source_dataset_dirs": [
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/blocks_ranking_rgb/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/blocks_ranking_size/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/move_bottle/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/move_can_pot/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/place_can_basket/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/place_fruit_skillet/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/shake_bottle/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/stack_blocks_two/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/stack_blocks_two_size/flying_hand_direct_randomized",
+            "/data/Flying-Hand-WAM/data/flying_hand_direct/thread_ring_rod/flying_hand_direct_randomized"
+        ]
     }
 }

@@ -237,13 +237,22 @@ class RobotWorkspace(BaseWorkspace):
                 states = resume_extra["rng"]
                 rank = dist.get_rank() if self.distributed else 0
                 if len(states) != (dist.get_world_size() if self.distributed else 1):
-                    raise ValueError("Resume requires the same process count")
-                rng = states[rank]
-                random.setstate(rng["python"])
-                np.random.set_state(rng["numpy"])
-                torch.set_rng_state(rng["torch"].cpu())
-                if torch.cuda.is_available():
-                    torch.cuda.set_rng_state(rng["cuda"].cpu())
+                    # Optimizer/model state is replicated in DDP, but rank-local
+                    # random streams cannot be restored exactly after resizing.
+                    seed = (int(cfg.training.seed) + int(self.global_step) + rank) % (2**32)
+                    random.seed(seed)
+                    np.random.seed(seed)
+                    torch.manual_seed(seed)
+                    if self.is_main_process:
+                        print("Resuming with changed process count: preserving training "
+                              "state and reseeding rank RNGs; not a bitwise-exact resume.", flush=True)
+                else:
+                    rng = states[rank]
+                    random.setstate(rng["python"])
+                    np.random.set_state(rng["numpy"])
+                    torch.set_rng_state(rng["torch"].cpu())
+                    if torch.cuda.is_available():
+                        torch.cuda.set_rng_state(rng["cuda"].cpu())
                 for name, parameter in self._model_module().named_parameters():
                     grad = resume_extra.get("gradients", {}).get(name)
                     if grad is not None:
