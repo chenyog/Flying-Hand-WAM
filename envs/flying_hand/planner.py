@@ -191,6 +191,14 @@ def restore_isolated_carried_actor(env, suppress_gripper_collisions=False):
 def step(env, n, save_freq=-1, step_callback=None):
     for _ in range(n):
         env.apply_flying_hand_gripper_qpos()
+        if not env.enable_dynamics:
+            # Direct mode owns the commanded root state. PhysX must still
+            # advance fingers and objects, but contact impulses must not move
+            # the root away from that state and make the next set_pose snap
+            # it back. Snapshot each substep, before physics mutates velocities.
+            direct_pose = env.flying_hand.get_root_pose()
+            direct_velocity = env.flying_hand.get_root_linear_velocity().copy()
+            direct_angular_velocity = env.flying_hand.get_root_angular_velocity().copy()
         env.scene.step()
         if env.enable_dynamics:
             # The floating articulation root is governed by the analytical
@@ -202,6 +210,10 @@ def step(env, n, save_freq=-1, step_callback=None):
             env.flying_hand.set_root_pose(sapien.Pose(dynamics.p.tolist(), dynamics.q.tolist()))
             env.flying_hand.set_root_linear_velocity(dynamics.v.tolist())
             env.flying_hand.set_root_angular_velocity(dynamics.w.tolist())
+        else:
+            env.flying_hand.set_root_pose(direct_pose)
+            env.flying_hand.set_root_linear_velocity(direct_velocity.tolist())
+            env.flying_hand.set_root_angular_velocity(direct_angular_velocity.tolist())
         if (
             env._released_actor_collision_state is not None
             and not env.is_grasping

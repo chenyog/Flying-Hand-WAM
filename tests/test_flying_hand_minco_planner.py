@@ -22,6 +22,82 @@ def _pose(position, yaw=0.0):
 
 
 class FlyingHandMincoPlannerTest(unittest.TestCase):
+    def test_direct_root_does_not_jump_after_contact_or_drift_between_steps(self):
+        class Hand:
+            def __init__(self):
+                self.pose = _pose([0.1, 0.2, 0.3], yaw=0.2)
+                self.linear_velocity = np.array([0.4, 0.5, 0.6])
+                self.angular_velocity = np.zeros(3)
+                self.finger_position = 0.0
+
+            def get_root_pose(self):
+                return self.pose
+
+            def get_root_linear_velocity(self):
+                return self.linear_velocity
+
+            def get_root_angular_velocity(self):
+                return self.angular_velocity
+
+            def set_root_pose(self, pose):
+                self.pose = pose
+
+            def set_root_linear_velocity(self, velocity):
+                self.linear_velocity = np.array(velocity)
+
+            def set_root_angular_velocity(self, velocity):
+                self.angular_velocity = np.array(velocity)
+
+        hand = Hand()
+        expected_pose = hand.pose
+        expected_velocity = hand.linear_velocity.copy()
+
+        class Scene:
+            steps = 0
+            object_position = 0.0
+
+            def step(self):
+                self.steps += 1
+                # Reproduce penetration resolution moving the commanded root
+                # by centimeters; mutate velocity buffers as well.
+                hand.pose = _pose(hand.pose.p + [0.02, -0.06, 0.03], yaw=0.4)
+                hand.linear_velocity[:] = 10.0
+                hand.angular_velocity[:] = 20.0
+                hand.finger_position += 0.01
+                self.object_position += 0.02
+
+        env = type("Env", (), {})()
+        env.flying_hand = hand
+        env.scene = Scene()
+        env.enable_dynamics = False
+        env.apply_flying_hand_gripper_qpos = lambda: None
+        env._released_actor_collision_state = None
+        env._task_objects_safe = lambda: True
+        env.flying_hand_save_step = 0
+        env.render_freq = 0
+        observations = []
+        env._save_flying_hand_frame = lambda save_freq: observations.append(hand.pose.p.copy())
+
+        def observe_step(task):
+            np.testing.assert_allclose(hand.pose.p, expected_pose.p)
+            np.testing.assert_allclose(hand.pose.q, expected_pose.q)
+            np.testing.assert_allclose(hand.linear_velocity, expected_velocity)
+            np.testing.assert_allclose(hand.angular_velocity, 0.0)
+
+        planner.step(env, 3, step_callback=observe_step)
+        # A new command must replace the previous hold; restoring the root
+        # must not rewind the physics state of fingers or other objects.
+        expected_pose = _pose([0.2, 0.3, 0.4], yaw=0.3)
+        expected_velocity = np.array([0.1, -0.2, 0.3])
+        planner.set_pose(env, expected_pose, expected_velocity)
+        planner.step(env, 1, step_callback=observe_step)
+        self.assertEqual(env.scene.steps, 4)
+        self.assertEqual(env.flying_hand_save_step, 4)
+        self.assertAlmostEqual(hand.finger_position, 0.04)
+        self.assertAlmostEqual(env.scene.object_position, 0.08)
+        np.testing.assert_allclose(observations[:3], [[0.1, 0.2, 0.3]] * 3)
+        np.testing.assert_allclose(observations[3], expected_pose.p)
+
     def test_physics_step_restores_analytical_flying_hand_root_state(self):
         class Hand:
             def __init__(self):
